@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Upside Down</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      width: 360px;
+      min-height: 120px;
+      background: #0e0e0e;
+      color: #f0f0f0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Status bar ── */
+    #status-bar {
+      height: 4px;
+      background: #222;
+      transition: background 0.4s ease;
+    }
+    #status-bar.working   { background: #f97316; } /* orange */
+    #status-bar.approval  { background: #22c55e; } /* green */
+
+    /* ── Main area ── */
+    #main {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* ── Message display ── */
+    #message-display {
+      display: none;
+      background: #1a1a1a;
+      border-radius: 6px;
+      padding: 10px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #d0d0d0;
+      white-space: pre-wrap;
+    }
+    #message-display.visible { display: block; }
+
+    /* ── Input row ── */
+    #input-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    #task-input {
+      flex: 1;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: #f0f0f0;
+      font-size: 13px;
+      resize: none;
+      outline: none;
+      line-height: 1.4;
+    }
+    #task-input:focus { border-color: #555; }
+    #task-input::placeholder { color: #555; }
+
+    #send-btn {
+      background: #f97316;
+      border: none;
+      border-radius: 6px;
+      padding: 0 14px;
+      color: white;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+    #send-btn:hover { background: #ea6a0a; }
+    #send-btn:disabled { background: #444; cursor: default; }
+
+    /* ── Approval panel ── */
+    #approval-panel {
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+    }
+    #approval-panel.visible { display: flex; }
+
+    #decline-note {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: #f0f0f0;
+      font-size: 13px;
+      resize: none;
+      outline: none;
+      width: 100%;
+    }
+    #decline-note::placeholder { color: #555; }
+
+    #approval-buttons {
+      display: flex;
+      gap: 8px;
+    }
+
+    #approve-btn {
+      flex: 1;
+      background: #22c55e;
+      border: none;
+      border-radius: 6px;
+      padding: 8px;
+      color: white;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    #approve-btn:hover { background: #16a34a; }
+
+    #decline-btn {
+      flex: 1;
+      background: #1a1a1a;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 8px;
+      color: #f0f0f0;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    #decline-btn:hover { background: #2a2a2a; }
+
+    /* ── API key setup ── */
+    #api-key-section {
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+    }
+    #api-key-section.visible { display: flex; }
+
+    #api-key-input {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: #f0f0f0;
+      font-size: 12px;
+      outline: none;
+      width: 100%;
+    }
+
+    #save-key-btn {
+      background: #333;
+      border: none;
+      border-radius: 6px;
+      padding: 7px;
+      color: #f0f0f0;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    #save-key-btn:hover { background: #444; }
+
+    /* ── Footer ── */
+    #footer {
+      padding: 6px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    #status-text {
+      font-size: 11px;
+      color: #555;
+    }
+
+    #settings-toggle {
+      font-size: 11px;
+      color: #555;
+      cursor: pointer;
+      text-decoration: underline;
+      background: none;
+      border: none;
+      padding: 0;
+    }
+    #settings-toggle:hover { color: #888; }
+  </style>
+</head>
+<body>
+
+  <div id="drag-handle" style="
+    height: 20px;
+    cursor: grab;
+    background: #1a1a1a;
+    border-radius: 10px 10px 0 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  ">
+    <div style="width:32px;height:3px;background:#444;border-radius:2px;"></div>
+  </div>
+
+  <div id="status-bar"></div>
+
+  <div id="main">
+    <div id="message-display"></div>
+
+    <div id="input-row">
+      <textarea id="task-input" rows="2" placeholder="What do you want to do?"></textarea>
+      <button id="send-btn">Go</button>
+    </div>
+
+    <div id="approval-panel">
+      <textarea id="decline-note" rows="2" placeholder="Note for retry (optional)"></textarea>
+      <div id="approval-buttons">
+        <button id="approve-btn">Approve</button>
+        <button id="decline-btn">Decline</button>
+      </div>
+    </div>
+
+    <div id="api-key-section">
+      <input id="api-key-input" type="password" placeholder="Paste your Anthropic API key" />
+      <button id="save-key-btn">Save Key</button>
+    </div>
+  </div>
+
+  <div id="footer">
+    <span id="status-text">idle</span>
+    <button id="settings-toggle">api key</button>
+  </div>
+
+  <script src="panel.js"></script>
+</body>
+</html>
