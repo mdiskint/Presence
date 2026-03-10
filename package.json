@@ -1,0 +1,10 @@
+{
+  "name": "upside-down-scripts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed": "node scripts/seed-site-maps.js",
+    "regress": "node scripts/run-regression.js",
+    "regress:gate": "node scripts/regression-gate.js"
+  }
+}

@@ -658,7 +658,7 @@ function parseTruthySetting(raw) {
 
 async function hasOnboardingComplete() {
   const response = await fetch(
-    getSupabaseUrl() + '/rest/v1/hearth_settings?select=value&key=eq.onboarding_complete&limit=1',
+    getSupabaseUrl() + '/rest/v1/presence_settings?select=value&key=eq.onboarding_complete&limit=1',
     { headers: supabaseAuthHeaders() }
   );
   if (!response.ok) {
@@ -724,7 +724,7 @@ async function processIntakeFile(rawJson) {
 }
 
 async function markOnboardingComplete() {
-  const response = await fetch(getSupabaseUrl() + '/rest/v1/hearth_settings?on_conflict=key', {
+  const response = await fetch(getSupabaseUrl() + '/rest/v1/presence_settings?on_conflict=key', {
     method: 'POST',
     headers: {
       ...supabaseAuthHeaders(),
@@ -896,10 +896,238 @@ function timeAgo(date) {
   return Math.floor(seconds / 86400) + 'd ago';
 }
 
-function renderPresenceNotification(notification) {
+function buildReasoningBlock(reasoning) {
+  if (!reasoning) return '';
+  return '<div class="presence-reasoning">' +
+    '<div class="presence-reasoning-label">Why it fired:</div>' +
+    String(reasoning).replace(/</g, '&lt;') +
+    '</div>';
+}
+
+function buildGradeSummary(notification) {
+  var parts = [];
+  if (typeof notification.grade_timing === 'boolean') parts.push('Timing: ' + (notification.grade_timing ? 'Yes' : 'No'));
+  if (notification.grade_insight) parts.push('Insight: ' + notification.grade_insight);
+  if (typeof notification.grade_clarity === 'boolean') parts.push('Clarity: ' + (notification.grade_clarity ? 'Yes' : 'No'));
+  return parts.length > 0 ? parts.join(' · ') : 'Graded';
+}
+
+function renderPendingActionNotification(notification) {
   var container = document.getElementById('output-feed');
   if (!container) return;
   if (container.querySelector('[data-id="' + notification.id + '"]')) return;
+
+  var triggerCtx = {};
+  try { triggerCtx = JSON.parse(notification.trigger_context || '{}'); } catch (_) {}
+  var pendingActionId = triggerCtx.pending_action_id || '';
+  var task = triggerCtx.task || notification.message || '';
+  var mode = triggerCtx.mode || '';
+  var reasoning = notification.trigger_signal_excerpt || '';
+  var truncatedTask = task.length > 80 ? task.slice(0, 80) + '\u2026' : task;
+  var ago = timeAgo(new Date(notification.created_at));
+
+  var el = document.createElement('div');
+  el.className = 'presence-notification';
+  el.dataset.id = notification.id;
+
+  el.innerHTML =
+    '<div class="presence-header">' +
+    '<span class="presence-type" style="color:#fbbf24;">\u23f8 Agent held</span>' +
+    (mode ? '<span style="font-size:11px;color:#777;">' + mode + '</span>' : '') +
+    '<span class="presence-time">' + ago + '</span>' +
+    '</div>' +
+    '<div class="pa-task">' + truncatedTask.replace(/</g, '&lt;') + '</div>' +
+    (reasoning ? '<div class="pa-reasoning">' + reasoning.replace(/</g, '&lt;') + '</div>' : '') +
+    '<div class="presence-expand-row">' +
+    '<button class="presence-expand-btn pa-expand-draft" type="button">Show draft</button>' +
+    '<span class="presence-expand-loading"></span>' +
+    '</div>' +
+    '<div class="pa-draft-body pa-draft-hidden"></div>' +
+    '<div class="pa-action-row pa-draft-hidden">' +
+    '<button class="pa-btn pa-btn-send pa-send-btn">Send as-is</button>' +
+    '<button class="pa-btn pa-edit-toggle-btn">Edit</button>' +
+    '<button class="pa-btn pa-btn-decline pa-decline-btn">Decline</button>' +
+    '</div>' +
+    '<div class="pa-edit-section pa-draft-hidden">' +
+    '<textarea class="pa-edit-area"></textarea>' +
+    '<div class="pa-action-row">' +
+    '<button class="pa-btn pa-btn-send pa-send-edited-btn">Send edited</button>' +
+    '<button class="pa-btn pa-cancel-edit-btn">Cancel</button>' +
+    '</div>' +
+    '</div>' +
+    '<div class="pa-result-slot"></div>' +
+    '<div class="presence-actions"><button class="dismiss-btn" title="Dismiss">\u2715</button></div>';
+
+  var expandBtn = el.querySelector('.pa-expand-draft');
+  var expandLoading = el.querySelector('.presence-expand-loading');
+  var draftBody = el.querySelector('.pa-draft-body');
+  var actionRow = el.querySelector('.pa-action-row');
+  var editSection = el.querySelector('.pa-edit-section');
+  var editArea = el.querySelector('.pa-edit-area');
+  var sendBtn = el.querySelector('.pa-send-btn');
+  var editToggleBtn = el.querySelector('.pa-edit-toggle-btn');
+  var declineBtn = el.querySelector('.pa-decline-btn');
+  var sendEditedBtn = el.querySelector('.pa-send-edited-btn');
+  var cancelEditBtn = el.querySelector('.pa-cancel-edit-btn');
+  var resultSlot = el.querySelector('.pa-result-slot');
+  var draftExpanded = false;
+  var draftContent = '';
+
+  function patchPendingAction(patch) {
+    return fetch(
+      getSupabaseUrl() + '/rest/v1/pending_actions?id=eq.' + pendingActionId,
+      {
+        method: 'PATCH',
+        headers: { ...supabaseAuthHeaders(), 'Prefer': 'return=minimal' },
+        body: JSON.stringify(patch)
+      }
+    );
+  }
+
+  function markDone(label) {
+    // Mark notification read and remove
+    fetch(
+      getSupabaseUrl() + '/rest/v1/presence_notifications?id=eq.' + notification.id,
+      {
+        method: 'PATCH',
+        headers: { ...supabaseAuthHeaders(), 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ read: true })
+      }
+    ).catch(function() {});
+    resultSlot.innerHTML = '<span class="pa-result">' + label + '</span>';
+    setTimeout(function() { removePresenceNotificationById(notification.id); }, 800);
+  }
+
+  function disableAllButtons() {
+    el.querySelectorAll('.pa-btn, .pa-expand-draft').forEach(function(b) { b.disabled = true; });
+  }
+
+  // Expand / collapse draft
+  expandBtn.addEventListener('click', async function() {
+    if (draftExpanded) {
+      draftBody.classList.add('pa-draft-hidden');
+      actionRow.classList.add('pa-draft-hidden');
+      editSection.classList.add('pa-draft-hidden');
+      expandBtn.textContent = 'Show draft';
+      draftExpanded = false;
+      return;
+    }
+
+    if (draftContent) {
+      draftBody.textContent = draftContent;
+      draftBody.classList.remove('pa-draft-hidden');
+      actionRow.classList.remove('pa-draft-hidden');
+      expandBtn.textContent = 'Hide draft';
+      draftExpanded = true;
+      return;
+    }
+
+    expandBtn.disabled = true;
+    expandLoading.textContent = 'Loading...';
+    try {
+      var resp = await fetch(
+        getSupabaseUrl() + '/rest/v1/pending_actions?id=eq.' + pendingActionId + '&select=action_payload&limit=1',
+        { headers: supabaseAuthHeaders() }
+      );
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      var rows = await resp.json();
+      var payload = rows && rows[0] ? rows[0].action_payload : null;
+      if (payload && typeof payload === 'object') {
+        draftContent = String(payload.agent_result || JSON.stringify(payload, null, 2));
+      } else {
+        draftContent = String(payload || '(no draft content)');
+      }
+      draftBody.textContent = draftContent;
+      draftBody.classList.remove('pa-draft-hidden');
+      actionRow.classList.remove('pa-draft-hidden');
+      expandBtn.textContent = 'Hide draft';
+      draftExpanded = true;
+    } catch (err) {
+      showMessage('Failed to load draft: ' + (err.message || String(err)));
+    } finally {
+      expandBtn.disabled = false;
+      expandLoading.textContent = '';
+    }
+  });
+
+  // Send as-is
+  sendBtn.addEventListener('click', async function() {
+    disableAllButtons();
+    try {
+      await patchPendingAction({ outcome: 'confirmed', consumed: true });
+      markDone('Sent as-is');
+    } catch (err) {
+      showMessage('Send failed: ' + (err.message || String(err)));
+    }
+  });
+
+  // Edit toggle
+  editToggleBtn.addEventListener('click', function() {
+    editArea.value = draftContent;
+    actionRow.classList.add('pa-draft-hidden');
+    editSection.classList.remove('pa-draft-hidden');
+    editArea.focus();
+  });
+
+  // Cancel edit
+  cancelEditBtn.addEventListener('click', function() {
+    editSection.classList.add('pa-draft-hidden');
+    actionRow.classList.remove('pa-draft-hidden');
+  });
+
+  // Send edited
+  sendEditedBtn.addEventListener('click', async function() {
+    var edited = editArea.value.trim();
+    if (!edited) return;
+    disableAllButtons();
+    try {
+      await patchPendingAction({
+        outcome: 'edited',
+        consumed: true,
+        edited_payload: { result: edited }
+      });
+      markDone('Sent (edited)');
+    } catch (err) {
+      showMessage('Send edited failed: ' + (err.message || String(err)));
+    }
+  });
+
+  // Decline
+  declineBtn.addEventListener('click', async function() {
+    disableAllButtons();
+    try {
+      await patchPendingAction({ outcome: 'declined', consumed: true });
+      markDone('Declined');
+    } catch (err) {
+      showMessage('Decline failed: ' + (err.message || String(err)));
+    }
+  });
+
+  // Dismiss
+  var dismissBtn = el.querySelector('.dismiss-btn');
+  if (dismissBtn) {
+    dismissBtn.addEventListener('click', function() {
+      chrome.runtime.sendMessage({ type: 'MARK_NOTIFICATION_READ', notificationId: notification.id });
+      removePresenceNotificationById(notification.id);
+    });
+  }
+
+  chrome.runtime.sendMessage({ type: 'MARK_NOTIFICATION_READ', notificationId: notification.id });
+  container.prepend(el);
+  renderPresenceReadyState();
+}
+
+function renderPresenceNotification(notification) {
+  // Route pending_action notifications to dedicated renderer
+  if (notification.trigger_type === 'pending_action') {
+    return renderPendingActionNotification(notification);
+  }
+
+  var container = document.getElementById('output-feed');
+  if (!container) return;
+  if (container.querySelector('[data-id="' + notification.id + '"]')) return;
+
+  var alreadyGraded = Boolean(notification.graded_at);
 
   var el = document.createElement('div');
   el.className = 'presence-notification';
@@ -907,25 +1135,59 @@ function renderPresenceNotification(notification) {
 
   var confidence = notification.oracle_confidence;
   var confidenceColor = confidence >= 0.7 ? '#4ade80' : confidence >= 0.4 ? '#fbbf24' : '#f87171';
-  var labels = { state_change: 'State Change', email_trigger: 'Reply', scout_alert: 'Scout Alert', manual: 'Manual' };
+  var labels = { state_change: 'State Change', email_trigger: 'Reply', scout_alert: 'Scout Alert', manual: 'Manual', pending_action: 'Agent Held' };
   var ago = timeAgo(new Date(notification.created_at));
 
-  el.innerHTML = '<div class="presence-header">' +
+  var headerHtml = '<div class="presence-header">' +
     '<span class="presence-type">' + (labels[notification.trigger_type] || notification.trigger_type) + '</span>' +
     (confidence ? '<span class="presence-confidence" style="color:' + confidenceColor + '">' + Math.round(confidence * 100) + '%</span>' : '') +
     '<span class="presence-time">' + ago + '</span></div>' +
-    '<div class="presence-message">' + notification.message.replace(/</g, '&lt;') + '</div>' +
-    '<div class="presence-expand-row">' +
+    '<div class="presence-message">' + notification.message.replace(/</g, '&lt;') + '</div>';
+
+  var expandHtml = '<div class="presence-expand-row">' +
     '<button class="presence-expand-btn" type="button">Expand</button>' +
     '<span class="presence-expand-loading"></span>' +
     '</div>' +
-    '<div class="presence-expand-body presence-expand-hidden"></div>' +
-    '<div class="presence-actions">' +
-    '<button class="score-btn score-e" data-score="E" title="Excellent">E</button>' +
-    '<button class="score-btn score-g" data-score="G" title="Good">G</button>' +
-    '<button class="score-btn score-d" data-score="D" title="Didn\'t land">D</button>' +
-    '<button class="dismiss-btn" title="Dismiss">✕</button></div>';
+    '<div class="presence-expand-body presence-expand-hidden"></div>';
 
+  if (alreadyGraded) {
+    // Already graded: show summary + reasoning immediately, no grade UI
+    el.innerHTML = headerHtml + expandHtml +
+      '<div class="grade-summary">' + buildGradeSummary(notification) + '</div>' +
+      buildReasoningBlock(notification.reasoning) +
+      '<div class="presence-actions"><button class="dismiss-btn" title="Dismiss">✕</button></div>';
+  } else {
+    // Build three micro-rating rows
+    el.innerHTML = headerHtml + expandHtml +
+      '<div class="presence-actions">' +
+      '<div class="grade-rows">' +
+      '<div class="grade-row">' +
+      '<span class="grade-row-label">Right time?</span>' +
+      '<div class="grade-row-options">' +
+      '<button class="grade-opt-btn" data-field="grade_timing" data-value="true">Yes</button>' +
+      '<button class="grade-opt-btn" data-field="grade_timing" data-value="false">No</button>' +
+      '</div></div>' +
+      '<div class="grade-row">' +
+      '<span class="grade-row-label">Real insight?</span>' +
+      '<div class="grade-row-options">' +
+      '<button class="grade-opt-btn" data-field="grade_insight" data-value="yes">Yes</button>' +
+      '<button class="grade-opt-btn" data-field="grade_insight" data-value="partial">Partial</button>' +
+      '<button class="grade-opt-btn" data-field="grade_insight" data-value="no">No</button>' +
+      '</div></div>' +
+      '<div class="grade-row">' +
+      '<span class="grade-row-label">Clear enough?</span>' +
+      '<div class="grade-row-options">' +
+      '<button class="grade-opt-btn" data-field="grade_clarity" data-value="true">Yes</button>' +
+      '<button class="grade-opt-btn" data-field="grade_clarity" data-value="false">No</button>' +
+      '</div></div>' +
+      '<button class="grade-submit-btn" disabled>Submit</button>' +
+      '</div>' +
+      '<button class="dismiss-btn" title="Dismiss">✕</button>' +
+      '</div>' +
+      '<div class="presence-reasoning-slot"></div>';
+  }
+
+  // -- Expand button logic --
   var expandBtn = el.querySelector('.presence-expand-btn');
   var expandLoading = el.querySelector('.presence-expand-loading');
   var expandBody = el.querySelector('.presence-expand-body');
@@ -969,7 +1231,7 @@ function renderPresenceNotification(notification) {
     expandBtn.disabled = true;
     expandLoading.textContent = 'Loading...';
     try {
-      const response = await fetch(getSupabaseUrl() + '/functions/v1/hearth-converse', {
+      const response = await fetch(getSupabaseUrl() + '/functions/v1/presence-converse', {
         method: 'POST',
         headers: supabaseAuthHeaders(),
         body: JSON.stringify({
@@ -996,86 +1258,92 @@ function renderPresenceNotification(notification) {
     }
   }
 
-  function finalizeScore(outcome) {
-    el.querySelector('.presence-actions').innerHTML = '<span class="score-result">Scored: ' + outcome + '</span>';
-    setTimeout(function() { removePresenceNotificationById(notification.id); }, 600);
+  if (expandBtn) {
+    expandBtn.addEventListener('click', expandBreadcrumb);
   }
 
-  function showDismissReasonInput() {
-    var actions = el.querySelector('.presence-actions');
-    if (!actions) return;
-    actions.innerHTML =
-      '<div class="presence-reason-wrap">' +
-      '<label class="presence-reason-label" for="presence-reason-' + notification.id + '">What was wrong?</label>' +
-      '<input id="presence-reason-' + notification.id + '" class="presence-reason-input" type="text" placeholder="bad timing / stale info / wrong connection / other" />' +
-      '<div class="presence-reason-actions">' +
-      '<button class="presence-reason-submit">Submit D</button>' +
-      '<button class="presence-reason-skip">Skip</button>' +
-      '</div>' +
-      '</div>';
+  // -- Dismiss button --
+  var dismissBtn = el.querySelector('.dismiss-btn');
+  if (dismissBtn) {
+    dismissBtn.addEventListener('click', function() {
+      chrome.runtime.sendMessage({ type: 'MARK_NOTIFICATION_READ', notificationId: notification.id });
+      removePresenceNotificationById(notification.id);
+    });
+  }
 
-    var input = actions.querySelector('.presence-reason-input');
-    var submit = actions.querySelector('.presence-reason-submit');
-    var skip = actions.querySelector('.presence-reason-skip');
+  // -- Three-dimensional grading logic (only if not already graded) --
+  if (!alreadyGraded) {
+    var gradeState = { grade_timing: null, grade_insight: null, grade_clarity: null };
+    var submitBtn = el.querySelector('.grade-submit-btn');
 
-    function submitDismissScore() {
-      var reason = input ? input.value.trim() : '';
-      chrome.runtime.sendMessage({
-        type: 'SCORE_NOTIFICATION',
-        notificationId: notification.id,
-        outcome: 'D',
-        gradeReason: reason
+    function checkGradeComplete() {
+      var complete = gradeState.grade_timing !== null &&
+                     gradeState.grade_insight !== null &&
+                     gradeState.grade_clarity !== null;
+      if (submitBtn) submitBtn.disabled = !complete;
+    }
+
+    el.querySelectorAll('.grade-opt-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var field = btn.dataset.field;
+        var value = btn.dataset.value;
+
+        // Deselect siblings
+        var siblings = btn.closest('.grade-row-options').querySelectorAll('.grade-opt-btn');
+        siblings.forEach(function(s) { s.classList.remove('selected'); });
+        btn.classList.add('selected');
+
+        // Store value
+        if (field === 'grade_timing' || field === 'grade_clarity') {
+          gradeState[field] = value === 'true';
+        } else {
+          gradeState[field] = value;
+        }
+        checkGradeComplete();
       });
-      finalizeScore('D');
-    }
+    });
 
-    if (submit) {
-      submit.addEventListener('click', submitDismissScore);
-    }
-    if (skip) {
-      skip.addEventListener('click', function() {
+    if (submitBtn) {
+      submitBtn.addEventListener('click', function() {
+        if (gradeState.grade_timing === null || gradeState.grade_insight === null || gradeState.grade_clarity === null) return;
+
+        // Compute legacy outcome
+        var outcome;
+        if (gradeState.grade_timing && gradeState.grade_insight === 'yes' && gradeState.grade_clarity) {
+          outcome = 'E';
+        } else if (gradeState.grade_insight === 'no') {
+          outcome = 'D';
+        } else {
+          outcome = 'G';
+        }
+
+        var gradeFields = {
+          grade_timing: gradeState.grade_timing,
+          grade_insight: gradeState.grade_insight,
+          grade_clarity: gradeState.grade_clarity,
+          graded_at: new Date().toISOString()
+        };
+
         chrome.runtime.sendMessage({
           type: 'SCORE_NOTIFICATION',
           notificationId: notification.id,
-          outcome: 'D',
-          gradeReason: ''
+          outcome: outcome,
+          gradeFields: gradeFields
         });
-        finalizeScore('D');
-      });
-    }
-    if (input) {
-      input.focus();
-      input.addEventListener('keydown', function(event) {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          submitDismissScore();
+
+        // Replace grade rows with summary
+        var actionsEl = el.querySelector('.presence-actions');
+        if (actionsEl) {
+          actionsEl.innerHTML = '<span class="score-result">Graded: ' + outcome + '</span>';
+        }
+
+        // Reveal reasoning
+        var slot = el.querySelector('.presence-reasoning-slot');
+        if (slot && notification.reasoning) {
+          slot.innerHTML = buildReasoningBlock(notification.reasoning);
         }
       });
     }
-  }
-
-  el.querySelectorAll('.score-btn').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      var outcome = btn.dataset.score;
-      if (outcome === 'D') {
-        showDismissReasonInput();
-        return;
-      }
-      chrome.runtime.sendMessage({
-        type: 'SCORE_NOTIFICATION',
-        notificationId: notification.id,
-        outcome: outcome
-      });
-      finalizeScore(outcome);
-    });
-  });
-
-  el.querySelector('.dismiss-btn').addEventListener('click', function() {
-    chrome.runtime.sendMessage({ type: 'MARK_NOTIFICATION_READ', notificationId: notification.id });
-    removePresenceNotificationById(notification.id);
-  });
-  if (expandBtn) {
-    expandBtn.addEventListener('click', expandBreadcrumb);
   }
 
   chrome.runtime.sendMessage({ type: 'MARK_NOTIFICATION_READ', notificationId: notification.id });
@@ -1356,4 +1624,5 @@ if (setupAnonKeyInputEl) {
   });
 }
 
+chrome.runtime.sendMessage({ type: 'POPUP_OPENED' }).catch(() => {});
 bootOnboardingGate();

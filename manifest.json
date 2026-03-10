@@ -17,7 +17,8 @@
     "scripting",
     "storage",
     "sessions",
-    "sidePanel"
+    "sidePanel",
+    "alarms"
   ],
 
   "host_permissions": [
@@ -38,14 +39,14 @@
         "default": "Ctrl+Shift+H",
         "mac": "Command+Shift+H"
       },
-      "description": "Toggle Hearth panel"
+      "description": "Toggle Presence panel"
     }
   },
 
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content/content.js"],
+      "js": ["content/content.js", "title-observer.js"],
       "run_at": "document_idle"
     },
     {
