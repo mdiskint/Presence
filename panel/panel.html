@@ -731,6 +731,78 @@
 </head>
 <body>
 
+<div id="presence-status-bar" style="
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #0a0a0a;
+  border-bottom: 1px solid #1e1e1e;
+  font-family: monospace;
+  font-size: 11px;
+  color: #666;
+">
+  <div style="display: flex; align-items: center; gap: 8px;">
+    <span id="status-dot" style="
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #333;
+      display: inline-block;
+      flex-shrink: 0;
+    "></span>
+    <span id="status-mode">loading...</span>
+  </div>
+  <div style="display: flex; align-items: center; gap: 8px;">
+    <span id="status-time" style="color: #444;"></span>
+    <span id="status-why-btn" style="
+      cursor: pointer;
+      color: #444;
+      user-select: none;
+      padding: 2px 6px;
+      border: 1px solid #222;
+      border-radius: 3px;
+    " title="Why is Presence silent?">?</span>
+  </div>
+</div>
+
+<div id="status-reason-panel" style="
+  display: none;
+  padding: 8px 12px;
+  background: #0d0d0d;
+  border-bottom: 1px solid #1e1e1e;
+  font-size: 11px;
+  color: #888;
+  font-style: italic;
+  line-height: 1.5;
+"></div>
+
+<div id="ask-presence-row" style="
+  padding: 8px 12px;
+  border-bottom: 1px solid #1a1a1a;
+">
+  <button id="ask-presence-btn" style="
+    background: transparent;
+    border: 1px solid #2a2a2a;
+    color: #666;
+    font-size: 11px;
+    font-family: monospace;
+    padding: 4px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+    width: 100%;
+    text-align: left;
+  ">What are you seeing?</button>
+  <div id="ask-presence-response" style="
+    display: none;
+    margin-top: 8px;
+    font-size: 11px;
+    color: #999;
+    line-height: 1.6;
+    font-style: italic;
+  "></div>
+</div>
+
   <div id="drag-handle" style="
     height: 20px;
     cursor: grab;

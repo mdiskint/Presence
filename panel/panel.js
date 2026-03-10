@@ -545,6 +545,123 @@ function getSupabaseUrl() {
   return runtimeConfig.url;
 }
 
+async function updateStatusBar() {
+  console.log('[StatusBar] running, url:', typeof getSupabaseUrl === 'function' ? getSupabaseUrl() : 'NO FUNCTION');
+
+  const url = `${getSupabaseUrl()}/rest/v1/gatekeeper_runs?select=run_at,mode_classified,sonnet_decision,opus_fired,signals_processed,notes&order=run_at.desc&limit=1`;
+  const headers = supabaseAuthHeaders ? supabaseAuthHeaders() : {};
+
+  console.log('[StatusBar] fetch url:', url);
+  console.log('[StatusBar] headers:', JSON.stringify(headers));
+
+  try {
+    const resp = await fetch(url, { headers });
+    console.log('[StatusBar] response status:', resp.status);
+    const text = await resp.text();
+    console.log('[StatusBar] response body:', text.slice(0, 300));
+
+    if (!resp.ok) {
+      document.getElementById('status-mode').textContent = `error ${resp.status}`;
+      return;
+    }
+
+    const data = JSON.parse(text);
+    if (!data || !data[0]) {
+      document.getElementById('status-mode').textContent = 'no data';
+      return;
+    }
+
+    const row = data[0];
+
+    const dot = document.getElementById('status-dot');
+    const modeEl = document.getElementById('status-mode');
+    const timeEl = document.getElementById('status-time');
+    const reasonPanel = document.getElementById('status-reason-panel');
+
+    if (!dot || !modeEl || !timeEl || !reasonPanel) return;
+
+    const modeMap = {
+      focused:   { color: '#4a9eff', label: 'focused' },
+      fidgeting: { color: '#f5a623', label: 'fidgeting' },
+      away:      { color: '#333',    label: 'away' },
+    };
+    const modeInfo = modeMap[row.mode_classified] || { color: '#444', label: row.mode_classified || 'unknown' };
+    dot.style.background = modeInfo.color;
+    modeEl.textContent = 'watching · ' + modeInfo.label;
+    modeEl.style.color = modeInfo.color;
+
+    const secsAgo = Math.round((Date.now() - new Date(row.run_at).getTime()) / 1000);
+    timeEl.textContent = secsAgo < 120 ? (secsAgo + 's ago') : (Math.round(secsAgo / 60) + 'm ago');
+
+    function humanizeReason(entry) {
+      if (entry.opus_fired) return 'Presence just spoke.';
+      if (entry.sonnet_decision === 'skip_no_signals') return 'No activity in the window.';
+      if (entry.sonnet_decision === 'skip_not_novel') return entry.notes || 'Nothing new enough to say.';
+      if (entry.sonnet_decision === 'skip_mode_away') return "You're away — holding.";
+      return entry.notes || 'Staying quiet.';
+    }
+    reasonPanel.textContent = humanizeReason(row);
+
+  } catch (e) {
+    console.error('[StatusBar] exception:', e.message, e.stack);
+    document.getElementById('status-mode').textContent = 'exception';
+  }
+}
+
+async function askPresence() {
+  const btn = document.getElementById('ask-presence-btn');
+  const responseEl = document.getElementById('ask-presence-response');
+  if (!btn || !responseEl) return;
+
+  btn.textContent = 'thinking...';
+  btn.disabled = true;
+  responseEl.style.display = 'none';
+
+  try {
+    if (!runtimeConfig || !runtimeConfig.url || !runtimeConfig.anonKey) {
+      throw new Error('config_missing');
+    }
+
+    const resp = await fetch(getSupabaseUrl() + '/functions/v1/presence-gatekeeper', {
+      method: 'POST',
+      headers: supabaseAuthHeaders(),
+      body: JSON.stringify({
+        trigger: 'status_request',
+        user_id: runtimeConfig.userId || null
+      })
+    });
+
+    if (!resp.ok) {
+      throw new Error('HTTP ' + resp.status);
+    }
+
+    const data = await resp.json();
+    responseEl.textContent = data.status_summary || 'Nothing to report right now.';
+    responseEl.style.display = 'block';
+    btn.textContent = 'Ask again';
+  } catch (e) {
+    responseEl.textContent = 'Could not reach Presence.';
+    responseEl.style.display = 'block';
+    btn.textContent = 'What are you seeing?';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+const askPresenceBtn = document.getElementById('ask-presence-btn');
+if (askPresenceBtn) {
+  askPresenceBtn.addEventListener('click', askPresence);
+}
+
+const statusWhyBtn = document.getElementById('status-why-btn');
+if (statusWhyBtn) {
+  statusWhyBtn.addEventListener('click', () => {
+    const panel = document.getElementById('status-reason-panel');
+    if (!panel) return;
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  });
+}
+
 const directiveActiveEl = document.getElementById('directive-active');
 const directiveEditorEl = document.getElementById('directive-editor');
 const directiveTextEl = document.getElementById('directive-text');
@@ -898,7 +1015,7 @@ function timeAgo(date) {
 
 function buildReasoningBlock(reasoning) {
   if (!reasoning) return '';
-  return '<div class="presence-reasoning">' +
+  return '<div class="presence-reasoning notification-reasoning">' +
     '<div class="presence-reasoning-label">Why it fired:</div>' +
     String(reasoning).replace(/</g, '&lt;') +
     '</div>';
@@ -1114,7 +1231,14 @@ function renderPendingActionNotification(notification) {
 
   chrome.runtime.sendMessage({ type: 'MARK_NOTIFICATION_READ', notificationId: notification.id });
   container.prepend(el);
+  hideNotificationReasoning();
   renderPresenceReadyState();
+}
+
+function hideNotificationReasoning() {
+  document.querySelectorAll('.notification-reasoning').forEach(el => {
+    el.style.display = 'none';
+  });
 }
 
 function renderPresenceNotification(notification) {
@@ -1348,6 +1472,7 @@ function renderPresenceNotification(notification) {
 
   chrome.runtime.sendMessage({ type: 'MARK_NOTIFICATION_READ', notificationId: notification.id });
   container.prepend(el);
+  hideNotificationReasoning();
   renderPresenceReadyState();
 }
 
@@ -1374,6 +1499,7 @@ chrome.runtime.onMessage.addListener(function(msg) {
   if (msg.type === 'PRESENCE_NOTIFICATIONS') {
     var newlyAdded = mergePresenceNotifications(msg.notifications || []);
     newlyAdded.forEach(renderPresenceNotification);
+    hideNotificationReasoning();
     renderPresenceReadyState();
   }
 });
@@ -1535,6 +1661,7 @@ function initNormalPopup() {
   chrome.storage.session.get('presenceNotifications', function(data) {
     var seeded = mergePresenceNotifications(data.presenceNotifications || []);
     seeded.forEach(renderPresenceNotification);
+    hideNotificationReasoning();
     renderPresenceReadyState();
   });
 }
@@ -1581,6 +1708,8 @@ async function handleSetupContinue() {
 async function bootOnboardingGate() {
   try {
     await loadRuntimeConfig();
+    updateStatusBar();
+    setInterval(updateStatusBar, 15000);
     if (!isConfigReady()) {
       setSetupMode(true);
       return;

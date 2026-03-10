@@ -30,7 +30,7 @@ interface AttentionDigestResult {
 
 interface OpusSynthesisResult {
   message: string;
-  reasoning: string;
+  reasoning: string | null;
 }
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -852,14 +852,14 @@ function formatCalibrationLog(rows: Json[]): string | null {
  * Returns top 15 by vitality + 5 from sparse cognitive_type x life_domain cells.
  * Falls back to plain vitality-ordered query if RPC fails.
  */
-async function fetchDiverseMemories(): Promise<Json[]> {
+async function fetchDiverseMemories(userId: string = USER_ID): Promise<Json[]> {
   try {
     const url = `${SUPABASE_URL}/rest/v1/rpc/get_diverse_memory_sample`;
     const resp = await fetch(url, {
       method: "POST",
       headers: jsonHeaders(),
       body: JSON.stringify({
-        p_user_id: USER_ID,
+        p_user_id: userId,
         top_n: 15,
         diverse_n: 5,
       }),
@@ -893,9 +893,89 @@ async function fetchDiverseMemories(): Promise<Json[]> {
   }
 }
 
+async function fetchTrajectory(userId: string): Promise<string> {
+  const rows = await dbSelect(
+    "trajectories",
+    `select=arcs,tensions,drift&user_id=eq.${encodeURIComponent(userId)}&is_active=eq.true&order=generated_at.desc&limit=1`,
+  );
+  const t = rows[0] ?? null;
+  return formatTrajectory(t);
+}
+
+async function fetchPrimeDirective(_userId: string): Promise<string | null> {
+  const rows = await dbSelect(
+    "presence_state",
+    "select=prime_directive&id=eq.1&limit=1",
+  );
+  const directive = String(rows[0]?.prime_directive ?? "").trim();
+  return directive || null;
+}
+
+async function fetchRecentSignals(userId: string, minutes: number): Promise<SignalRow[]> {
+  const rows = await dbSelect(
+    "activity_signal",
+    `select=signal_type,signal_value,metadata,created_at,user_id&user_id=eq.${encodeURIComponent(userId)}&created_at=gte.${encodeURIComponent(
+      isoMinutesAgo(minutes),
+    )}&order=created_at.desc&limit=300`,
+  );
+  return rows as SignalRow[];
+}
+
+async function fetchLastGatekeeperRun(_userId: string): Promise<Json | null> {
+  const rows = await dbSelect(
+    "gatekeeper_runs",
+    "select=run_at,mode_classified,sonnet_decision,notes&order=run_at.desc&limit=1",
+  );
+  return rows[0] ?? null;
+}
+
+async function fetchSessionArc(supabaseUrl: string, supabaseKey: string): Promise<string> {
+  try {
+    const resp = await fetch(
+      `${supabaseUrl}/rest/v1/rpc/get_session_arc`,
+      {
+        method: "POST",
+        headers: {
+          "apikey": supabaseKey,
+          "Authorization": `Bearer ${supabaseKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ lookback_minutes: 60 }),
+      },
+    );
+    const data = await resp.json().catch(() => ({}));
+    return String((data as Json)?.arc_description ?? "").trim();
+  } catch (_e) {
+    return "";
+  }
+}
+
+async function callOpus(prompt: string, maxTokens = 200): Promise<string> {
+  const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  const resp = await client.messages.create({
+    model: MODEL_OPUS,
+    max_tokens: maxTokens,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  const text = resp.content
+    .filter((b) => b.type === "text")
+    .map((b) => b.text)
+    .join("\n")
+    .trim();
+
+  if (!text) {
+    throw new Error("Opus returned empty response");
+  }
+  return text;
+}
+
 async function assembleIdentityContext(): Promise<{ cachedSystemContext: string; userPromptContext: string; memoryIds: string[] }> {
-  const [memories, trajectoryRows, activityRows, scoutRuns, platformRows, recentNotifs, gradedNotifs] = await Promise.all([
-    fetchDiverseMemories(),
+  const supabaseUrl = SUPABASE_URL;
+  const supabaseKey = SUPABASE_SERVICE_ROLE_KEY;
+
+  const [memories, trajectoryRows, activityRows, scoutRuns, platformRows, recentNotifs, gradedNotifs, primeDirective, sessionArc] = await Promise.all([
+    fetchDiverseMemories(USER_ID),
     dbSelect("trajectories", "select=arcs,tensions,drift&order=generated_at.desc&limit=1"),
     dbSelect(
       "activity_signal",
@@ -919,6 +999,8 @@ async function assembleIdentityContext(): Promise<{ cachedSystemContext: string;
       "presence_notifications",
       "select=message,reasoning,outcome&outcome=not.is.null&reasoning=not.is.null&order=created_at.desc&limit=10",
     ),
+    fetchPrimeDirective(USER_ID),
+    fetchSessionArc(supabaseUrl, supabaseKey),
   ]);
 
   const trajectory = trajectoryRows[0] ?? null;
@@ -929,6 +1011,14 @@ async function assembleIdentityContext(): Promise<{ cachedSystemContext: string;
     "[MEMORIES]",
     formatMemories(memories),
     "[/MEMORIES]",
+    "",
+    "[PRIME DIRECTIVE]",
+    String(primeDirective ?? "None set").trim() || "None set",
+    "[/PRIME DIRECTIVE]",
+    "",
+    "[SESSION ARC]",
+    String(sessionArc || "").trim() || "(none)",
+    "[/SESSION ARC]",
     "",
     "[TRAJECTORY]",
     formatTrajectory(trajectory),
@@ -990,26 +1080,35 @@ async function synthesizePresenceMessage(cachedSystemContext: string, promptCont
     throw new Error("Anthropic returned empty response.");
   }
 
-  const raw = text
+  const raw = text.trim()
     .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
     .replace(/```\s*$/i, "")
     .trim();
 
+  let message = "";
+  let reasoning: string | null = null;
+
   try {
     const parsed = JSON.parse(raw) as Json;
-    const message = String(parsed.message ?? "").trim();
-    if (!message) {
-      throw new Error("Opus JSON missing non-empty message field.");
-    }
-    const reasoning = String(parsed.reasoning ?? "").trim() || "No reasoning provided.";
-    return { message, reasoning };
+    message = String(parsed.message ?? "").trim();
+    reasoning = parsed.reasoning === null || parsed.reasoning === undefined
+      ? null
+      : String(parsed.reasoning).trim() || null;
   } catch (e) {
     console.error("Opus JSON parse failed, falling back to raw text:", e);
-    return { message: text.trim(), reasoning: "Opus JSON parse failed; used raw text fallback." };
+    message = raw;
+    reasoning = null;
   }
+
+  if (!message) {
+    throw new Error("Opus response missing non-empty message.");
+  }
+
+  return { message, reasoning };
 }
 
-async function writePresenceNotification(message: string, reasoning: string, contextMemoryIds: string[]): Promise<void> {
+async function writePresenceNotification(message: string, reasoning: string | null, contextMemoryIds: string[]): Promise<void> {
   await dbInsert("presence_notifications", {
     message,
     reasoning,
@@ -1157,6 +1256,60 @@ Deno.serve(async (req) => {
       );
     }
 
+    const trigger = String(payload.trigger ?? "sweep").trim().toLowerCase();
+    const userId = String(payload.user_id ?? USER_ID).trim() || USER_ID;
+
+    if (trigger === "status_request") {
+      const [state, memories, trajectory, primeDirective, recentSignals, lastRun] = await Promise.all([
+        readPresenceState(),
+        fetchDiverseMemories(userId),
+        fetchTrajectory(userId),
+        fetchPrimeDirective(userId),
+        fetchRecentSignals(userId, 30),
+        fetchLastGatekeeperRun(userId),
+      ]);
+
+      const modeSinceMinutes = state.mode_since ? Math.max(0, Math.round(minutesSince(state.mode_since))) : null;
+      const modeDuration = modeSinceMinutes === null
+        ? "unknown"
+        : modeSinceMinutes < 1
+        ? "under a minute"
+        : modeSinceMinutes === 1
+        ? "about 1 minute"
+        : `about ${modeSinceMinutes} minutes`;
+
+      const statusPrompt = `You are Presence. The user is asking what you're currently observing.
+
+[CURRENT MODE]
+${state.current_mode} for ${modeDuration}
+
+[PRIME DIRECTIVE]
+${primeDirective || "None set"}
+
+[TRAJECTORY]
+${trajectory}
+
+[TOP MEMORIES]
+${memories.map((m) => String(m.content ?? "")).filter(Boolean).join("\n") || "(none)"}
+
+[RECENT SIGNALS — last 30 min]
+${recentSignals.map((s) => `${String(s.signal_type ?? "unknown")}: ${String(s.signal_value ?? "").slice(0, 120)}`).join("\n") || "(none)"}
+
+[LAST SWEEP]
+Mode: ${String(lastRun?.mode_classified ?? "unknown")}, Decision: ${String(lastRun?.sonnet_decision ?? "unknown")}, ${String(lastRun?.notes ?? "")}
+
+Write 2-4 sentences in first person. Tell the user:
+- What mode they've been in and for roughly how long
+- What 1-2 threads or patterns you've been tracking across their recent signals and memories
+- Honestly why you haven't spoken (nothing cleared the bar, same context, waiting for a break, etc.)
+
+Be specific. Name actual content from the signals. Do not be vague or generic.
+Do not start with "I". Do not use bullet points. Plain prose only.`;
+
+      const opusResponse = await callOpus(statusPrompt, 200);
+      return response({ status_summary: opusResponse });
+    }
+
     const eventCreatedAt = String(
       payload.created_at ??
         (payload.record && typeof payload.record === "object" ? (payload.record as Json).created_at : "") ??
@@ -1260,14 +1413,15 @@ Deno.serve(async (req) => {
       `Gatekeeper rationale: ${judgment.reason}`,
       "[/TRIGGER]",
       "",
-      "IMPORTANT: Do not surface a connection already covered in [RECENTLY SURFACED]. If the most salient thing in context has already been said, find the next most interesting connection — or return SILENCE.",
+      "You MUST respond with ONLY a valid JSON object. No preamble, no explanation, no markdown fences. The response must begin with { and end with }.",
       "",
-      "Respond with a JSON object:",
+      "Required format:",
       "{",
-      '  "message": "the breadcrumb — one sentence or question",',
-      '  "reasoning": "why this fired: what signals, what pattern, what connection made this worth saying now"',
+      '  "message": "one sentence or question, the breadcrumb",',
+      '  "reasoning": "2-3 sentences explaining what signals triggered this and why it cleared the bar"',
       "}",
-      "Return only valid JSON. No preamble, no explanation outside the object.",
+      "",
+      "IMPORTANT: Do not surface a connection already covered in [RECENTLY SURFACED]. If the most salient thing in context has already been said, find the next most interesting connection — or return SILENCE.",
     ].join("\n");
 
     const opus = await synthesizePresenceMessage(cachedSystemContext, synthesisPrompt);
