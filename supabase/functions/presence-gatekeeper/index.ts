@@ -1042,6 +1042,7 @@ async function askGateJudgment(
   oldMode: Mode,
   newMode: Mode,
   activityRows: SignalRow[],
+  triggerType: "transition" | "steady_state" = "transition",
 ): Promise<{ fire: boolean; reason: string }> {
   const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
   const prompt = [
@@ -1049,12 +1050,15 @@ async function askGateJudgment(
     "",
     "Your job is to find the most interesting, useful, or timely thing you could surface right now — then ask: does it clear the bar for this moment? If yes, fire. If no, stay silent. But you are always searching first.",
     "",
-    `A mode transition just occurred: ${oldMode} -> ${newMode}`,
+    triggerType === "transition"
+      ? `A mode transition just occurred: ${oldMode} -> ${newMode}`
+      : `User has been in ${newMode.toUpperCase()} mode for an extended period. Evaluate the accumulated signals.`,
+    `Current cognitive state: ${newMode.toUpperCase()}`,
     "",
-    "Each mode defines what 'worth saying' means — not whether to speak, but what shape the output needs to take:",
-    "- FOCUSED: High bar. Only fire if the observation is actionable in the next 60 seconds — something the user can use right now and return from. Not synthesis, not pattern recognition. A direct, immediately usable thing. Found something interesting but not immediately actionable? Stay silent.",
-    "- FIDGETING: Medium bar. User is between things and receptive. Surface anything genuinely interesting — a pattern worth naming, a connection across active threads. Exploratory output is valid.",
-    "- AWAY/IDLE: Lowest bar. User is returning. This is the re-entry window. Reorientation, synthesis, pattern recognition all valid. Almost anything contextually relevant is worth surfacing.",
+    "The current mode sets the interrupt bar — not whether to speak, but how high the bar is:",
+    "- FOCUSED: HIGHEST bar. Only fire if the observation is directly actionable in the next 60 seconds. Not synthesis, not pattern recognition — something usable right now. If it's interesting but not immediately actionable, stay silent. Protect the work.",
+    "- FIDGETING: LOW bar. User is between things and receptive by definition. Do not wait for a transition out of fidgeting — if the signal is coherent and interesting, fire now. Exploratory, connective, speculative output all valid.",
+    "- AWAY/IDLE: LOWEST bar. Natural re-entry window. Surface anything contextually relevant — reorientation, synthesis, what accumulated while they were gone. Almost anything clears this bar.",
     "",
     "If this insight has already fired and nothing irreversible is in flight — do not repeat it. One mention was enough. Let it go.",
     "If an irreversible action IS in flight (compose window open, audience-facing output being finalized, overlapping live workstreams) — fire regardless of repetition.",
@@ -1220,7 +1224,12 @@ Deno.serve(async (req) => {
     );
     const judgmentRows = judgmentRowsRaw as SignalRow[];
 
-    const judgment = await askGateJudgment(state.current_mode, modeResult.mode, judgmentRows);
+    const judgment = await askGateJudgment(
+      state.current_mode,
+      modeResult.mode,
+      judgmentRows,
+      state.current_mode === modeResult.mode ? "steady_state" : "transition",
+    );
     if (!judgment.fire) {
       await logGate(
         "suppressed",
