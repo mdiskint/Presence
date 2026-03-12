@@ -6,6 +6,28 @@ Prerequisites: macOS, Python 3.10+, Supabase account (free tier works), Anthropi
 
 ---
 
+## The Easy Way — Use MCP (Recommended)
+
+Presence uses Supabase MCP natively. With it connected to Claude Code, you can skip most manual SQL steps — just describe what you want and Claude handles schema creation, migration, edge function deployment, and debugging.
+
+**Connect Supabase MCP to Claude Code:**
+
+1. In Claude Code settings, add the Supabase MCP server
+2. Authenticate with your Supabase project
+3. Claude can now directly read your schema, run migrations, execute SQL, and deploy edge functions against your live project
+
+**What this unlocks:**
+
+- "Create the memories table with the correct schema" → Claude reads the codebase and runs the migration
+- "Deploy the gatekeeper edge function" → Claude runs `supabase functions deploy` with the right flags
+- "Check why breadcrumbs stopped firing" → Claude queries `gatekeeper_runs` directly and reads the output
+- "Add a column to activity_signal" → Claude writes and applies the migration, no copy-paste needed
+- "Download the live edge functions and commit them" → Claude runs `supabase functions download` and stages the diff
+
+For Notion docs: Connect Notion MCP the same way. Session handoffs, architecture decisions, and TODOs all live in Notion and Claude can read/write them directly during work sessions.
+
+---
+
 ## 1. Create a Supabase project
 
 Create a new project at [supabase.com](http://supabase.com). Note your:
@@ -53,6 +75,7 @@ create table memories (
   memory_class text,
   heat float default 0.5,
   vitality_score float default 0.5,
+  pinned boolean default false,
   access_count int default 0,
   validation_count int default 0,
   embedding vector(1536),
@@ -80,6 +103,7 @@ create table presence_notifications (
   scored boolean default false,
   grade text,
   grade_reason text,
+  reasoning text,
   context_memories text[],
   created_at timestamptz default now()
 );
@@ -343,13 +367,25 @@ select cron.schedule('cleanup_activity_signal', '0 * * * *',
 );
 
 -- Gatekeeper sweep every 60 seconds
--- Replace YOUR_PROJECT_REF and YOUR_ANON_KEY before running
+-- Replace YOUR_PROJECT_REF and YOUR_SERVICE_ROLE_KEY before running
 select cron.schedule('presence-gatekeeper-sweep', '* * * * *',
   $$select net.http_post(
     url := 'https://YOUR_PROJECT_REF.supabase.co/functions/v1/presence-gatekeeper',
-    headers := '{"Content-Type": "application/json", "Authorization": "Bearer YOUR_ANON_KEY"}'::jsonb,
+    headers := '{"Content-Type": "application/json", "Authorization": "Bearer YOUR_SERVICE_ROLE_KEY"}'::jsonb,
     body := '{}'::jsonb
   )$$
+);
+-- Memory heat decay (4am UTC daily)
+select cron.schedule('memory-heat-decay', '0 4 * * *',
+  $$
+  update memories set heat = heat - 0.05
+  where heat > 0.1 and not pinned
+    and (last_accessed is null or last_accessed < now() - interval '30 days');
+  insert into memory_compost (content, type, domain, heat, death_reason)
+  select content, type, domain, heat, 'heat_decay'
+  from memories where heat <= 0.1 and not pinned;
+  delete from memories where heat <= 0.1 and not pinned;
+  $$
 );
 ```
 
@@ -376,11 +412,14 @@ brew install supabase/tap/supabase
 supabase login
 cd /path/to/Presence
 supabase link --project-ref YOUR_PROJECT_REF
-supabase functions deploy presence-gatekeeper
-supabase functions deploy admit-memory
-supabase functions deploy hearth-converse
-supabase functions deploy agent-scout
+supabase functions deploy presence-gatekeeper --no-verify-jwt
+supabase functions deploy admit-memory --no-verify-jwt
+supabase functions deploy hearth-converse --no-verify-jwt
+supabase functions deploy agent-scout --no-verify-jwt
+supabase functions deploy process-intake --no-verify-jwt
 ```
+
+**Note:** `--no-verify-jwt` is required. The gatekeeper is triggered by pg_cron with a service role key, not a user JWT. Functions without this flag will reject pg_cron calls with 401.
 
 ---
 
@@ -480,7 +519,7 @@ Runs on port 5556. The extension popup calls it to open a folder picker and star
 1. Open Chrome → `chrome://extensions`
 2. Enable Developer mode (top right toggle)
 3. Click **Load unpacked**
-4. Select the repo root: `Presence/`
+4. Select the `Presence/extension/` directory (not the repo root)
 
 The Presence panel appears in your Chrome toolbar.
 
@@ -488,7 +527,7 @@ The Presence panel appears in your Chrome toolbar.
 
 ## 11. Set your user ID
 
-The edge functions use a hardcoded `user_id`. To use your own, find-and-replace this UUID across all four `supabase/functions/*/index.ts` files and redeploy:
+The edge functions use a hardcoded `user_id`. To use your own, find-and-replace this UUID across all five `supabase/functions/*/index.ts` files and redeploy:
 
 ```
 95aa73e2-ac1a-4ac6-bfae-15a946b11131
