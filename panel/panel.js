@@ -1510,6 +1510,7 @@ const realtimeStatusText = document.getElementById('realtime-status-text');
 const watchFolderBtn = document.getElementById('watch-folder-btn');
 const watchFolderStatusEl = document.getElementById('watch-folder-status');
 let activeWatchedFolder = '';
+let activeWatchTargetType = null;
 
 function setRealtimeToggleUi(active) {
   if (!realtimeToggleBtn || !realtimeStatusDot || !realtimeStatusText) return;
@@ -1521,24 +1522,44 @@ function setRealtimeToggleUi(active) {
 
 function truncateFolderPath(path) {
   var value = String(path || '').trim();
-  if (value.length <= 64) return value;
-  return '...' + value.slice(-61);
+  if (value.length <= 30) return value;
+  return value.slice(0, 27) + '...';
 }
 
-function setWatchFolderUi(folderPath) {
-  activeWatchedFolder = String(folderPath || '').trim();
+function setWatchFolderUi(targetPath, targetType) {
+  activeWatchedFolder = String(targetPath || '').trim();
+  activeWatchTargetType = targetType || null;
+
   if (watchFolderBtn) {
-    watchFolderBtn.textContent = activeWatchedFolder ? 'Stop Watching' : 'Watch Folder';
+    if (activeWatchedFolder) {
+      var parts = activeWatchedFolder.split(/[\/]/).filter(Boolean);
+      var name = parts.length ? parts[parts.length - 1] : activeWatchedFolder;
+      watchFolderBtn.textContent = 'Stop Watching ' + truncateFolderPath(name);
+    } else {
+      watchFolderBtn.textContent = 'Watch';
+    }
   }
+
   if (!watchFolderStatusEl) return;
+
   if (!activeWatchedFolder) {
-    watchFolderStatusEl.textContent = 'No folder selected.';
+    watchFolderStatusEl.textContent = 'No target selected.';
     return;
   }
-  watchFolderStatusEl.innerHTML = 'Watching: <span class="watch-folder-path">' + truncateFolderPath(activeWatchedFolder).replace(/</g, '&lt;') + '</span>';
+
+  var typeLabel = activeWatchTargetType === 'file' || activeWatchTargetType === 'folder'
+    ? activeWatchTargetType
+    : 'unknown';
+
+  watchFolderStatusEl.innerHTML =
+    '<span class="watch-folder-type" style="font-size:10px;color:#888;text-transform:uppercase;margin-right:6px;">' +
+    typeLabel.replace(/</g, '&lt;') +
+    '</span>' +
+    '<span class="watch-folder-path">' + truncateFolderPath(activeWatchedFolder).replace(/</g, '&lt;') + '</span>';
 }
 
 async function refreshWatchFolderStatus() {
+
   if (!watchFolderStatusEl) return;
   try {
     var response = await fetch('http://localhost:5556/status');
@@ -1550,10 +1571,13 @@ async function refreshWatchFolderStatus() {
       throw new Error('HTTP ' + response.status);
     }
     var payload = await response.json();
-    setWatchFolderUi(payload?.watched_folder || payload?.watch_folder || payload?.watchFolder || payload?.folder || '');
+    var watching = Boolean(payload && payload.watching);
+    var target = payload?.target || payload?.watched_file || payload?.watched_folder || payload?.watch_folder || payload?.watchFolder || payload?.folder || '';
+    var targetType = payload?.target_type || (payload?.watched_file ? 'file' : (payload?.watched_folder ? 'folder' : null));
+    setWatchFolderUi(watching ? target : '', watching ? targetType : null);
   } catch (err) {
     console.warn('[Presence] Failed to load watch folder status:', err?.message || err);
-    setWatchFolderUi('');
+    setWatchFolderUi('', null);
   }
 }
 
@@ -1561,7 +1585,7 @@ async function toggleWatchFolder() {
   if (!watchFolderBtn) return;
   watchFolderBtn.disabled = true;
   try {
-    const endpoint = activeWatchedFolder ? 'http://localhost:5556/stop-watching' : 'http://localhost:5556/pick-folder';
+    const endpoint = activeWatchedFolder ? 'http://localhost:5556/stop-watching' : 'http://localhost:5556/pick-target';
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

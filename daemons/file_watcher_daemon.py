@@ -52,6 +52,7 @@ logger = logging.getLogger("file_watcher_daemon")
 # STATE
 # ---------------------------------------------------------------------------
 watched_folder: str | None = None
+watched_file: str | None = None
 observer: Observer | None = None
 running = True
 events_written = 0
@@ -230,6 +231,7 @@ class PresenceFileHandler(FileSystemEventHandler):
             logger.info(f"[FW:Event] {event_type}: {rel_path}")
 
     def on_any_event(self, event):
+        global watched_file, watched_folder
         # Skip directory-level events and temporary/hidden files
         if event.is_directory:
             return
@@ -242,6 +244,16 @@ class PresenceFileHandler(FileSystemEventHandler):
 
         if self._debounce(src):
             return
+
+        if watched_file:
+            watched_path = os.path.abspath(watched_file)
+            watched_parent = os.path.dirname(watched_path)
+            watched_name = os.path.basename(watched_path)
+            src_abs = os.path.abspath(src)
+            src_parent = os.path.dirname(src_abs)
+            src_name = os.path.basename(src_abs)
+            if src_parent != watched_parent or src_name != watched_name:
+                return
 
         event_type = event.event_type  # created, modified, deleted, moved
         rel_path = src
@@ -260,6 +272,7 @@ class PresenceFileHandler(FileSystemEventHandler):
             "file_path": rel_path,
             "extension": ext,
             "watched_folder": watched_folder or "",
+            "watched_file": watched_file or "",
         }
 
         # For move events, include the destination
@@ -279,13 +292,13 @@ class PresenceFileHandler(FileSystemEventHandler):
 # ---------------------------------------------------------------------------
 # FOLDER PICKER (macOS osascript)
 # ---------------------------------------------------------------------------
-def pick_folder_dialog() -> str | None:
-    """Open native macOS folder picker via osascript. Returns path or None."""
+def pick_target_dialog() -> str | None:
+    """Open native macOS picker for either file or folder via osascript."""
     script = (
         'tell application "System Events"\n'
         '  activate\n'
-        '  set chosenFolder to choose folder with prompt "Select a folder to watch"\n'
-        '  return POSIX path of chosenFolder\n'
+        '  set chosenTarget to choose file or folder with prompt "Select a file or folder to watch"\n'
+        '  return POSIX path of chosenTarget\n'
         'end tell'
     )
     try:
@@ -303,9 +316,9 @@ def pick_folder_dialog() -> str | None:
         return None
 
 
-def start_watching(folder: str) -> bool:
-    """Start watchdog observer on the given folder."""
-    global observer, watched_folder
+def start_watching(target: str) -> bool:
+    """Start watchdog observer on a folder or a single file."""
+    global observer, watched_folder, watched_file
 
     # Stop existing observer if any
     if observer is not None:
@@ -315,41 +328,69 @@ def start_watching(folder: str) -> bool:
         except Exception:
             pass
 
-    if not os.path.isdir(folder):
-        logger.error(f"[FW:Watch] Not a directory: {folder}")
-        return False
-
-    watched_folder = folder
+    target = os.path.abspath(target)
     handler = PresenceFileHandler()
     observer = Observer()
-    observer.schedule(handler, folder, recursive=True)
-    observer.start()
-    logger.info(f"[FW:Watch] Now watching: {folder}")
 
-    # Write a signal that watching started
-    write_activity_signal(
-        signal_type="file_watcher_started",
-        signal_value=f"Watching: {folder}",
-        metadata={"source": "file_watcher", "watched_folder": folder},
-        user_id="default",
-    )
-    return True
+    if os.path.isfile(target):
+        parent = os.path.dirname(target)
+        if not os.path.isdir(parent):
+            logger.error(f"[FW:Watch] File parent is not a directory: {target}")
+            return False
+
+        watched_file = target
+        watched_folder = parent
+        observer.schedule(handler, parent, recursive=False)
+        observer.start()
+        logger.info(f"[FW:Watch] Now watching file: {target}")
+
+        write_activity_signal(
+            signal_type="file_watcher_started",
+            signal_value=f"Watching file: {target}",
+            metadata={"source": "file_watcher", "watched_folder": watched_folder, "watched_file": watched_file, "target_type": "file"},
+            user_id="default",
+        )
+        return True
+
+    if os.path.isdir(target):
+        watched_folder = target
+        watched_file = None
+        observer.schedule(handler, target, recursive=True)
+        observer.start()
+        logger.info(f"[FW:Watch] Now watching folder: {target}")
+
+        write_activity_signal(
+            signal_type="file_watcher_started",
+            signal_value=f"Watching folder: {target}",
+            metadata={"source": "file_watcher", "watched_folder": watched_folder, "watched_file": "", "target_type": "folder"},
+            user_id="default",
+        )
+        return True
+
+    logger.error(f"[FW:Watch] Not a file or directory: {target}")
+    return False
 
 
 def stop_watching() -> bool:
-    """Stop watchdog observer and clear watched folder state."""
-    global observer, watched_folder
+    """Stop watchdog observer and clear watched target state."""
+    global observer, watched_folder, watched_file
     try:
         if observer is not None:
             observer.stop()
             observer.join(timeout=5)
         observer = None
-        previous = watched_folder
+        previous_folder = watched_folder
+        previous_file = watched_file
         watched_folder = None
+        watched_file = None
         write_activity_signal(
             signal_type="file_watcher_stopped",
             signal_value="Watching stopped",
-            metadata={"source": "file_watcher", "watched_folder": previous or ""},
+            metadata={
+                "source": "file_watcher",
+                "watched_folder": previous_folder or "",
+                "watched_file": previous_file or "",
+            },
             user_id="default",
         )
         return True
@@ -366,9 +407,15 @@ app = Flask(__name__)
 
 @app.route("/status")
 def status():
+    target = watched_file or watched_folder
+    target_type = "file" if watched_file else ("folder" if watched_folder else None)
     return jsonify({
         "status": "running",
+        "watching": bool(target and observer and observer.is_alive()),
+        "target": target,
+        "target_type": target_type,
         "watched_folder": watched_folder,
+        "watched_file": watched_file,
         "observer_alive": observer.is_alive() if observer else False,
         "events_written": events_written,
         "last_event_at": datetime.fromtimestamp(last_event_at, tz=timezone.utc).isoformat() if last_event_at else None,
@@ -376,17 +423,24 @@ def status():
     })
 
 
+@app.route("/pick-target", methods=["GET", "POST"])
+def pick_target():
+    target = pick_target_dialog()
+    if target is None:
+        return jsonify({"error": "No target selected or dialog cancelled"}), 400
+
+    ok = start_watching(target)
+    if not ok:
+        return jsonify({"error": f"Failed to watch: {target}"}), 500
+
+    target_type = "file" if os.path.isfile(target) else "folder"
+    return jsonify({"watching": True, "target": target, "target_type": target_type, "status": "watching"})
+
+
 @app.route("/pick-folder", methods=["GET", "POST"])
 def pick_folder():
-    folder = pick_folder_dialog()
-    if folder is None:
-        return jsonify({"error": "No folder selected or dialog cancelled"}), 400
-
-    ok = start_watching(folder)
-    if not ok:
-        return jsonify({"error": f"Failed to watch: {folder}"}), 500
-
-    return jsonify({"watched_folder": folder, "status": "watching"})
+    # Backward-compatible alias
+    return pick_target()
 
 
 @app.route("/stop-watching", methods=["POST"])
@@ -394,7 +448,7 @@ def stop_watching_route():
     ok = stop_watching()
     if not ok:
         return jsonify({"ok": False, "error": "Failed to stop watcher"}), 500
-    return jsonify({"ok": True, "watched_folder": None, "status": "stopped"})
+    return jsonify({"ok": True, "watching": False, "target": None, "target_type": None, "status": "stopped"})
 
 
 # ---------------------------------------------------------------------------
