@@ -1,4 +1,4 @@
-# [SETUP.md](http://SETUP.md) — Updated Mar 8, 2026
+# [SETUP.md](http://SETUP.md) — Updated Mar 12, 2026
 
 Full installation walkthrough for Presence from scratch.
 
