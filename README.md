@@ -1,174 +1,114 @@
-# Upside Down
+# Presence
 
-**A presence layer for AI on the web.**
+**The proactive intelligence layer for AI. Watches how you work in real time and decides — on its own — whether something is worth interrupting you for.**
 
-Every AI agent today runs in a separate browser. Like a stranger walking into your life. Upside Down runs inside your browser. No passwords. No auth credentials. Just you and your personal AI, doing the work that needs doing.
+Everything being built right now in AI is reactive. You talk to it, it does a thing. Presence is the layer that's already watching, already noticing — and surfaces what matters without being summoned.
 
----
+The hard problem isn't technical. It's knowing what's worth interrupting for. Get that wrong and users turn it off immediately. That filtering problem requires knowing the person deeply enough to distinguish signal from noise.
 
-## The Core Insight
-
-When an AI agent needs to access Gmail, it has two options:
-
-1. **Ask for credentials** — hand over a password, set up OAuth, configure API access. The agent is a visitor being granted entry.
-2. **Be present** — run inside the user's actual Chrome session, where Gmail is already open and authenticated. The agent inherits identity rather than being handed it.
-
-Every major agentic browser today — OpenAI Operator, Perplexity Comet, Microsoft Copilot Mode, Browser Use, Browserbase — takes option 1. They spin up a fresh headless browser with no session history. It has no cookies, no saved passwords, no authenticated state. It's a stranger.
-
-Upside Down takes option 2.
+Identity is the engine. Presence is the proof. Current cost: ~$2/month.
 
 ---
 
-## What It Does
+## What it does
 
-Upside Down is a Chrome extension that injects a floating panel into every tab. The user types a task in plain English, the system acts across any tab that's open, including background tabs the user isn't looking at, or it can open new tabs on its own.
+Four stages, every 60 seconds:
 
-**Confirmed working (February 2026):**
+1. **Watches** — browser behavior, file changes, mic transcripts, AI interactions
+2. **Classifies** — focused, fidgeting, or away
+3. **Judges** — most potential output is rejected; silence is the default
+4. **Synthesizes** — one sentence or one question: a connection, a tension, a gap you can't see from inside it
 
-- Searched Google and Ticketmaster for LA Kings tickets, compared prices, reported back — user never left their current tab
-- Read Gmail from a background tab without password auth, API access, or the user switching tabs
-- Bought socks on Amazon with a plain English command — full purchase flow, proposal gate before checkout, user approved, order placed
+---
 
-No partnerships. No API agreements. No credentials handed over. No new browser. The user's existing session IS the permission layer.
+## Why this is different
+
+Every competitor building "proactive AI" has your data but no model of your *now*. No cognitive state read. No taste about when to stay quiet. ChatGPT Pulse shipped and got shelved. Gemini Personal Intelligence optimizes for engagement. Perplexity Computer watches your files, not you.
+
+What makes Presence different:
+
+- **Competed identity model** — 77 memory slots. New observations beat incumbents to earn a place. The shelf stays load-bearing instead of bloating. What survives *is* the identity.
+- **Diversity-aware sampling** — gatekeeper draws memories across `cognitive_type × life_domain` cells, not just top vitality. Pure meritocracy kills surprise; cross-domain tension requires shelf diversity.
+- **Trajectory synthesis** — arcs, tensions, and drift extracted from the competed shelf. Shape emerges from competition, not explicit modeling.
+- **Mode-tiered interrupt thresholds** — focused means earn the interrupt. Fidgeting is low bar. Away suppresses. The bar is the product.
+- **Breadcrumb voice** — CUE, QUESTION, or INVITATION. One sentence max. The reasoning behind every fired breadcrumb is stored separately from the output.
+- **The silence is the product** — 8,000+ gatekeeper sweeps run. Most produce nothing. That's working correctly.
 
 ---
 
 ## Architecture
 
-Three files. Three layers.
-
 ```
-upside-down/
-├── manifest.json          — MV3, all permissions
-├── background.js          — Brain: Claude API, agentic loop, session state
-├── content/content.js     — Hands: fill, click, scroll, navigate, read
-└── panel/panel.html+js    — Shell: floating iframe on every page
-```
+Chrome extension
+  └── activity_signal (tabs, scroll, searches, topic signals, file changes, mic)
+        └── pg_cron (60s sweep)
+              └── presence-gatekeeper (v66)
+                    ├── Haiku novelty check (Layer 0)
+                    ├── Sonnet judgment gate (Layer 1)
+                    └── Opus breadcrumb synthesis (Layer 2, max_tokens 150)
+                          ├── presence_notifications → extension popup
+                          └── admit-memory → 77-slot competed shelf
+                                └── trajectories (arcs, tensions, drift)
 
-**The Shell** — A floating iframe injected into every tab automatically. Drag/resize. Orange = working, green = awaiting approval. Sends tasks up, displays results down. Knows nothing about AI.
+Daemons (launchd)
+  ├── realtime_listener.py   → mic capture + speaker classification (resemblyzer)
+  └── file_watcher_daemon.py → file changes with full text extraction (.docx, .pdf, .xlsx)
 
-**The Brain** — The only file that talks to Claude. Manages `runAgenticLoop()` — up to 20 steps, loops until complete. Reads tab DOM via `getTabContextById(tabId)` and injects content into Claude's conversation history. Routes actions to the correct tab by URL substring match. Manages proposal/approve/decline flow.
-
-**The Hands** — Executes fill, click, key, scroll, read. React-safe. Double-injection guard. `navigate` is disabled — Claude uses `openTab` for new domains and fill/click for within-site navigation.
-
-### The Key Technical Decision
-
-Most browser automation uses Chrome DevTools Protocol (CDP) via Puppeteer or Playwright. CDP is detectable — it sets WebDriver flags, opens WebSocket connections, and leaves fingerprints. Sites actively block it.
-
-Upside Down uses Chrome Extension APIs instead. No CDP. No WebSocket. No detectable flags. The automation is indistinguishable from normal browsing because it *is* normal browsing — the same APIs a password manager uses.
-
-### Session Inheritance
-
-When Upside Down opens a background tab to Gmail, Chrome sends the user's real session cookies — the same ones sent when the user opens it manually. The server sees an authenticated request from the user's IP, browser fingerprint, and session. There's no handoff. The AI just *is* the user, in terms of what the web can observe.
-
-This is the architectural gap every other agent has failed to close.
-
----
-
-## The Agentic Loop
-
-```
-User types task → panel sends to background.js
-background.js → Claude API (task + DOM context from target tab)
-Claude → action (fill / click / key / openTab / readDOM)
-background.js → content.js on target tab (execute action)
-content.js → background.js (success + updated DOM)
-[3 second settle delay]
-background.js → Claude API (updated context, continue?)
-... loops until complete: true, proposal triggered, or step cap
+agent-scout (pg_cron, 8am/8pm)
+  └── HN + GitHub + Reddit → Haiku analysis → activity_signal
 ```
 
-The user never intervenes between steps. The loop runs until the mission is done or a write action (purchase, send message) requires explicit approval.
+---
+
+## Repo structure
+
+```
+Presence/extension/
+├── background.js                   # Extension service worker
+├── manifest.json                   # Chrome MV3
+├── content/content.js              # Page signal capture
+├── panel/panel.html + panel.js     # Extension popup UI
+├── platform-memory-scraper.js      # Claude.ai memory scraper
+├── title-observer.js               # Tab title change observer
+├── supabase/functions/
+│   ├── presence-gatekeeper/        # Core sweep engine (v66)
+│   ├── admit-memory/               # Memory competition gate
+│   ├── hearth-converse/            # Expand-breadcrumb conversational interface
+│   └── agent-scout/                # Competitive intelligence scanner
+└── daemons/
+    ├── realtime_listener.py        # Mic + speaker diarization
+    ├── file_watcher_daemon.py      # File change detection
+    └── enroll_voice.py             # Voice enrollment
+```
 
 ---
 
-## The Proposal Gate
+## Cost
 
-Write actions require user approval. Read actions and navigation run autonomously.
+| Component | Frequency | ~Monthly |
+|---|---|---|
+| Haiku novelty check | Every 60s | ~$0.50 |
+| Sonnet judgment gate | ~30% of sweeps | ~$1.00 |
+| Opus breadcrumb synthesis | ~2–3 fires/day | ~$0.50 |
+| Scout | 2x/day | ~$0.50 |
+| **Total** | | **~$2/month** |
 
-- **Orange panel** = working in background
-- **Green panel** = proposal ready for review
-- **Approve** → executes
-- **Decline + note** → note becomes new instruction, task re-queues
-
-This isn't just a safety feature. It's the product. Every other agentic system treats human approval as friction to be eliminated. Upside Down treats it as the trust architecture.
-
----
-
-## Why This Doesn't Exist Yet
-
-The web was built assuming a human navigates manually. Every layer — auth, ads, UX, revenue models — assumes human eyeballs moving between pages.
-
-AI agents broke that assumption faster than anyone built an answer. The labs are focused on capability. The infrastructure companies are focused on scale. The identity layer — the part that lets an AI travel with a person across their authenticated life — doesn't exist.
-
-**AP2** (Google's Agent Payments Protocol, launched September 2025 with 60+ partners) solved commerce: AI buys things for you safely. It doesn't solve presence: AI travels with you as your identity across the entire web.
-
-**Browser Use, Browserbase, Hyperbrowser, Skyvern** solve automation at scale: run thousands of browser instances in the cloud. They don't solve the personal session problem — they're strangers at scale.
-
-**Upside Down sits in the gap:** everything before and after the transaction. The identity. The context. The relationship between a person and their AI moving through the web together.
+Cost scales only with Opus fire rate, not activity volume.
 
 ---
 
-## The Competitive Landscape (February 2026)
+## Setup
 
-| System | Architecture | Session | Background Tabs | Real Accounts |
-|--------|-------------|---------|-----------------|---------------|
-| OpenAI Operator | Sandboxed browser | Fresh | No | No |
-| Perplexity Comet | Separate browser | Fresh | No | No |
-| Browser Use | CDP/Playwright | Copied cookies | No | Fragile |
-| Browserbase | Cloud headless | Fresh | No | No |
-| rtrvr.ai | Chrome Extension | Real ✓ | No | Yes ✓ |
-| **Upside Down** | **Chrome Extension** | **Real ✓** | **Yes ✓** | **Yes ✓** |
+Full installation: [SETUP.md](./SETUP.md)
 
-The only column that matters for personal use is the last one. The only system that checks all three boxes is this one.
+Prerequisites: macOS, Python 3.10+, Node 18+, Supabase account, Anthropic API key, Chrome.
+
+**Recommended:** Connect the [Supabase MCP](https://supabase.com/docs/guides/getting-started/mcp) to Claude Code. Schema creation, edge function deployment, and debugging become conversational rather than manual.
 
 ---
 
-## The Presence Layer
+## Notes
 
-This is the framing that distinguishes Upside Down from automation tools:
-
-**Automation tools** ask: *what task can I complete for you?*
-
-**A presence layer** asks: *where are you, and how can I help you from here?*
-
-The difference is identity and continuity. An automation tool is stateless — it's hired for a job. A presence layer travels with you. It knows what you have open. It knows your context. It acts when you ask, from inside your authenticated life, without you having to explain who you are or hand over the keys.
-
-This is what agents need to actually be useful to real people: not more capability, but presence.
-
----
-
-## ToS & Risk
-
-Amazon and Google prohibit automated access. Enforcement targets scrapers and bots at scale.
-
-A single user with a Chrome extension who explicitly approves every write action looks almost identical to a human using 1Password autofill to the server — same IP, same browser fingerprint, same session. The human-in-the-loop is both the ethical design and the legal defense.
-
-Scale is the actual risk threshold, not personal use. At scale, the conversation with sites changes: "we're bringing you customers with intent and approval gates" — which is a better deal than what they have now, which is users asking AI to bypass their sites entirely.
-
----
-
-## Status
-
-**February 20, 2026** — Working prototype. Two confirmed demos on video.
-
-- Research loop: confirmed working
-- Purchase flow: confirmed working (Amazon, real session, real order)
-- Gmail background read: confirmed working
-- Agentic loop: up to 20 steps, autonomous
-- Proposal gate: working
-
-Known issues: timing on slow-loading pages, occasional tab tracking loss, no error recovery loop yet. These are polish problems, not architecture problems.
-
----
-
-## What's Next
-
-1. Clean demo video — Gmail background read is the hero
-2. Error recovery — surface action failures back to Claude for retry
-3. Protocol spec — one page: handshake structure, mission parameters, access expiration
-4. The question worth sitting with: the right architecture for presence and the right architecture for scale are the same one. What does that mean?
-
----
-
-*Built February 2026. The web currently asks users to go to tools. This flips it.*
+- macOS + Chrome + Supabase. Linux possible with launchd adaptation.
+- Single-user architecture. Multi-tenant path is designed, not yet built.
+- The hardest part of this system is not signal collection. It is restraint.
