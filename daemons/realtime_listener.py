@@ -310,14 +310,14 @@ def _as_bool(value) -> bool:
 
 
 def get_realtime_active(force: bool = False) -> bool:
-    """Read realtime_active toggle from Supabase presence_settings with 10s cache."""
+    """Read realtime_active toggle from Supabase hearth_settings with 10s cache."""
     global _realtime_active_cache, _realtime_active_checked_at
     now = time.time()
     if not force and (now - _realtime_active_checked_at) < REALTIME_FLAG_CACHE_SECONDS:
         return _realtime_active_cache
 
     try:
-        rows = _supabase_get("presence_settings?select=value&key=eq.realtime_active&limit=1")
+        rows = _supabase_get("hearth_settings?select=value&key=eq.realtime_active&limit=1")
         value = rows[0].get("value") if rows else "false"
         _realtime_active_cache = _as_bool(value)
     except Exception as e:

@@ -374,7 +374,7 @@ async function setRealtimeActive(active) {
       return { success: false, error: 'Supabase config missing. Complete setup first.' };
     }
     const response = await fetch(
-      cfg.url + '/rest/v1/presence_settings?on_conflict=key',
+      cfg.url + '/rest/v1/hearth_settings?on_conflict=key',
       {
         method: 'POST',
         headers: supabaseHeaders(cfg, { 'Prefer': 'resolution=merge-duplicates,return=representation' }),
@@ -399,7 +399,7 @@ async function getRealtimeActive() {
       return { success: false, error: 'Supabase config missing. Complete setup first.', active: false };
     }
     const response = await fetch(
-      cfg.url + '/rest/v1/presence_settings?select=value&key=eq.realtime_active&limit=1',
+      cfg.url + '/rest/v1/hearth_settings?select=value&key=eq.realtime_active&limit=1',
       {
         headers: supabaseHeaders(cfg)
       }

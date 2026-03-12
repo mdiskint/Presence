@@ -775,7 +775,7 @@ function parseTruthySetting(raw) {
 
 async function hasOnboardingComplete() {
   const response = await fetch(
-    getSupabaseUrl() + '/rest/v1/presence_settings?select=value&key=eq.onboarding_complete&limit=1',
+    getSupabaseUrl() + '/rest/v1/hearth_settings?select=value&key=eq.onboarding_complete&limit=1',
     { headers: supabaseAuthHeaders() }
   );
   if (!response.ok) {
@@ -841,7 +841,7 @@ async function processIntakeFile(rawJson) {
 }
 
 async function markOnboardingComplete() {
-  const response = await fetch(getSupabaseUrl() + '/rest/v1/presence_settings?on_conflict=key', {
+  const response = await fetch(getSupabaseUrl() + '/rest/v1/hearth_settings?on_conflict=key', {
     method: 'POST',
     headers: {
       ...supabaseAuthHeaders(),
