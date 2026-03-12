@@ -73,7 +73,7 @@ async function absorbNovelty(existingContent: string, candidateContent: string):
     body: JSON.stringify({
       model: "gpt-4o-mini", max_tokens: 300, temperature: 0.3,
       messages: [
-        { role: "system", content: "You are a memory curator. You have an existing memory and a new candidate that is semantically similar.\n\nYour job: produce a single, updated memory that preserves everything from the existing memory AND absorbs whatever is genuinely new or more specific from the candidate.\n\nRules:\n- Output ONLY the updated memory text. No explanation, no preamble.\n- Keep it to 1-2 sentences. Dense, behavioral, specific.\n- If the candidate adds nothing new, return the existing memory unchanged.\n- Prefer the more specific or recent framing when both say the same thing.\n- Never lose information from the existing memory." },
+        { role: "system", content: `You are a memory curator. You have an existing memory and a new candidate that is semantically similar.\n\nYour job: produce a single, updated memory that preserves everything from the existing memory AND absorbs whatever is genuinely new or more specific from the candidate.\n\nRules:\n- Output ONLY the updated memory text. No explanation, no preamble.\n- Keep it to 1-2 sentences. Dense, behavioral, specific.\n- If the candidate adds nothing new, return the existing memory unchanged.\n- Prefer the more specific or recent framing when both say the same thing.\n- Never lose information from the existing memory.` },
         { role: "user", content: `EXISTING MEMORY:\n${existingContent}\n\nCANDIDATE MEMORY:\n${candidateContent}\n\nOutput the updated memory:` },
       ],
     }),
@@ -121,7 +121,7 @@ async function regenerateTrajectory(
       "Output ONLY valid JSON with exactly three fields:",
       "{",
       '  "arcs": "2-4 short phrases (comma-separated). Start each with a verb: Accelerating toward, Pivoting to, Converging on, Drifting from.",',
-      '  "tensions": "2-3 active tensions in the form X vs Y (comma-separated).",',
+      '  "tensions": "2-3 active tensions in the form X ↔ Y (comma-separated).",',
       '  "drift": "1-2 short phrases describing what is losing signal or fading."',
       "}",
       "",
@@ -225,18 +225,21 @@ Deno.serve(async (req) => {
       if (contentChanged) {
         updatePayload.content = enrichedContent;
         updatePayload.embedding = await generateEmbedding(enrichedContent);
+        // Re-classify cognitive_type when content meaningfully changes
         updatePayload.cognitive_type = await classifyCognitiveType(enrichedContent);
       }
       const { error: updateError } = await supabase.from("memories").update(updatePayload).eq("id", match.id);
       if (updateError) return new Response(JSON.stringify({ error: "merge_failed", details: updateError }), { status: 500, headers: { "Content-Type": "application/json" } });
       const { count: shelfCount } = await supabase.from("memories").select("*", { count: "exact", head: true }).eq("user_id", user_id);
       await regenerateTrajectory(supabase, user_id, shelfCount ?? 0);
+      console.log(`[admit-memory] MERGED into ${match.id} | similarity=${match.similarity} | content_changed=${contentChanged} | cognitive_type=${updatePayload.cognitive_type ?? "unchanged"}`);
       return new Response(JSON.stringify({ action: "merged", merged_into: match.id, similarity: match.similarity, content_changed: contentChanged, enriched_content: contentChanged ? enrichedContent : undefined, trajectory_regenerated: true }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
 
     const { count: shelfCount, error: countError } = await supabase.from("memories").select("*", { count: "exact", head: true }).eq("user_id", user_id);
     if (countError) return new Response(JSON.stringify({ error: "shelf_count_failed", details: countError }), { status: 500, headers: { "Content-Type": "application/json" } });
 
+    // Classify cognitive type before any insert
     const cognitive_type = await classifyCognitiveType(content);
 
     if ((shelfCount || 0) < SHELF_CAPACITY) {
@@ -246,6 +249,7 @@ Deno.serve(async (req) => {
       if (insertError) return new Response(JSON.stringify({ error: "insert_failed", details: insertError }), { status: 500, headers: { "Content-Type": "application/json" } });
       const newCount = (shelfCount || 0) + 1;
       await regenerateTrajectory(supabase, user_id, newCount);
+      console.log(`[admit-memory] INSERTED id=${inserted.id} | heat=${insertHeat} | vitality=${insertVitality.toFixed(3)} | shelf=${newCount} | cognitive_type=${cognitive_type}`);
       return new Response(JSON.stringify({ action: "inserted", id: inserted.id, vitality_score: insertVitality, shelf_count: newCount, cognitive_type, trajectory_regenerated: true }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
 
@@ -254,14 +258,18 @@ Deno.serve(async (req) => {
     const { data: weakest, error: weakError } = await supabase.from("memories").select("id, content, vitality_score, heat").eq("user_id", user_id).order("vitality_score", { ascending: true }).limit(1).single();
     if (weakError) return new Response(JSON.stringify({ error: "competition_failed", details: weakError }), { status: 500, headers: { "Content-Type": "application/json" } });
 
+    console.log(`[admit-memory] COMPETE: provisional=${provisionalVitality.toFixed(3)} vs weakest=${(weakest.vitality_score || 0).toFixed(3)} | weakest_id=${weakest.id}`);
+
     if (provisionalVitality > (weakest.vitality_score || 0)) {
       await supabase.from("memory_compost").insert({ content: weakest.content, vitality_at_death: weakest.vitality_score, killed_by_content: content, death_reason: "vitality_competition", user_id });
       await supabase.from("memories").delete().eq("id", weakest.id);
       const { data: inserted, error: insertError } = await supabase.from("memories").insert({ content, user_id, memory_type: memory_type || "user", cognitive_type, embedding, heat: candidateHeat, vitality_score: provisionalVitality, ...extraFields }).select("id").single();
       if (insertError) return new Response(JSON.stringify({ error: "eviction_insert_failed", details: insertError }), { status: 500, headers: { "Content-Type": "application/json" } });
       await regenerateTrajectory(supabase, user_id, shelfCount ?? SHELF_CAPACITY);
-      return new Response(JSON.stringify({ action: "evicted", id: inserted.id, vitality_score: provisionalVitality, evicted_id: weakest.id, evicted_vitality: weakest.vitality_score, cognitive_type, trajectory_regenerated: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      console.log(`[admit-memory] EVICTED ${weakest.id} (vitality=${weakest.vitality_score}) | INSERTED ${inserted.id} (vitality=${provisionalVitality.toFixed(3)}) | cognitive_type=${cognitive_type}`);
+      return new Response(JSON.stringify({ action: "evicted", id: inserted.id, vitality_score: provisionalVitality, evicted_id: weakest.id, evicted_vitality: weakest.vitality_score, provisional_vitality: provisionalVitality, cognitive_type, trajectory_regenerated: true }), { status: 200, headers: { "Content-Type": "application/json" } });
     } else {
+      console.log(`[admit-memory] DISCARDED — lost competition. provisional=${provisionalVitality.toFixed(3)} < weakest=${(weakest.vitality_score || 0).toFixed(3)}`);
       return new Response(JSON.stringify({ action: "discarded", reason: "lost_competition", provisional_vitality: provisionalVitality, incumbent_vitality: weakest.vitality_score, trajectory_regenerated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
   } catch (err) {

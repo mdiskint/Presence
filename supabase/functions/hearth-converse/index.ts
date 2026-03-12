@@ -1,11 +1,13 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
+// === CONFIG ===
 var SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 var SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
 var ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 var HEARTH_USER_ID = "95aa73e2-ac1a-4ac6-bfae-15a946b11131";
 var MODEL = "claude-opus-4-6";
 
+// === DB HELPERS ===
 function restHeaders() {
   return {
     "Content-Type": "application/json",
@@ -21,6 +23,8 @@ async function dbSelect(table: string, query: string): Promise<any[]> {
     return await res.json();
   } catch (e) { console.error("DB select error (" + table + "):", e); return []; }
 }
+
+// === CONTEXT ASSEMBLY ===
 
 async function fetchMemories(): Promise<string> {
   var rows = await dbSelect("memories",
@@ -142,6 +146,7 @@ ${scout}
 Respond as someone who has been watching this person\u2019s life and work. Connect across data sources \u2014 activity + memories + intelligence + trajectory + platform knowledge. Don\u2019t just memory-match. Synthesize.`;
 }
 
+// === MAIN HANDLER ===
 Deno.serve(async function(req: Request) {
   if (req.method === "OPTIONS") {
     return new Response(null, {
@@ -193,6 +198,11 @@ Deno.serve(async function(req: Request) {
 
     var systemPrompt = buildSystemPrompt(memories, platformKnowledge, trajectory, activity, scout);
 
+    console.log("[hearth-converse] Context assembled in " + (Date.now() - startTime) + "ms. " +
+      "Memories: " + memories.split("\n").length + " lines, " +
+      "Platform: " + (platformKnowledge ? "loaded" : "empty") + ", " +
+      "Activity: " + activity.split("\n").length + " lines");
+
     var anthropicBody = {
       model: MODEL,
       max_tokens: 2048,
@@ -218,6 +228,7 @@ Deno.serve(async function(req: Request) {
 
     if (!apiRes.ok) {
       var errText = await apiRes.text();
+      console.error("[hearth-converse] Anthropic API error:", apiRes.status, errText);
       return new Response(JSON.stringify({
         error: "Anthropic API error",
         status: apiRes.status,
@@ -237,6 +248,10 @@ Deno.serve(async function(req: Request) {
     }
 
     var elapsed = Date.now() - startTime;
+    console.log("[hearth-converse] Response in " + elapsed + "ms. " +
+      "Input tokens: " + (apiData.usage?.input_tokens || "?") + ", " +
+      "Output tokens: " + (apiData.usage?.output_tokens || "?") + ", " +
+      "Cache read: " + (apiData.usage?.cache_read_input_tokens || 0));
 
     return new Response(JSON.stringify({
       response: responseText,
@@ -248,6 +263,7 @@ Deno.serve(async function(req: Request) {
     });
 
   } catch (error) {
+    console.error("[hearth-converse] Error:", error);
     return new Response(JSON.stringify({ error: error.message }), {
       status: 500,
       headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
