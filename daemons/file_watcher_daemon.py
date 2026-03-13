@@ -30,7 +30,7 @@ import requests
 from docx import Document
 import openpyxl
 import pdfplumber
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -58,6 +58,7 @@ running = True
 events_written = 0
 last_event_at: float = 0.0
 started_at = time.time()
+active_user_id: str = (os.getenv("PRESENCE_USER_ID") or "default").strip() or "default"
 
 _HEARTBEAT_LAST_SENT: dict[str, float] = {}
 HEARTBEAT_INTERVAL_SECONDS = 5 * 60
@@ -105,15 +106,16 @@ def write_activity_signal(
     signal_type: str,
     signal_value: str,
     metadata: dict | None = None,
-    user_id: str = "default",
+    user_id: str | None = None,
 ) -> bool:
     """Best-effort write to activity_signal. Non-fatal."""
     try:
+        resolved_user_id = str(user_id or active_user_id or "default").strip() or "default"
         payload = {
             "signal_type": signal_type,
             "signal_value": signal_value,
             "metadata": metadata or {},
-            "user_id": user_id,
+            "user_id": resolved_user_id,
         }
         resp = requests.post(
             f"{SUPABASE_URL}/rest/v1/activity_signal",
@@ -202,7 +204,7 @@ class PresenceFileHandler(FileSystemEventHandler):
                 signal_type="file_change",
                 signal_value=f"{event_type}: {rel_path}",
                 metadata=metadata,
-                user_id="default",
+                user_id=active_user_id,
             )
             return
 
@@ -224,7 +226,7 @@ class PresenceFileHandler(FileSystemEventHandler):
             signal_type="file_change",
             signal_value=f"{event_type}: {rel_path} | {metadata['snippet']}",
             metadata=metadata,
-            user_id="default",
+            user_id=active_user_id,
         )
         if wrote:
             global events_written, last_event_at
@@ -364,7 +366,7 @@ def start_watching(target: str) -> bool:
             signal_type="file_watcher_started",
             signal_value=f"Watching file: {target}",
             metadata={"source": "file_watcher", "watched_folder": watched_folder, "watched_file": watched_file, "target_type": "file"},
-            user_id="default",
+            user_id=active_user_id,
         )
         return True
 
@@ -379,7 +381,7 @@ def start_watching(target: str) -> bool:
             signal_type="file_watcher_started",
             signal_value=f"Watching folder: {target}",
             metadata={"source": "file_watcher", "watched_folder": watched_folder, "watched_file": "", "target_type": "folder"},
-            user_id="default",
+            user_id=active_user_id,
         )
         return True
 
@@ -407,7 +409,7 @@ def stop_watching() -> bool:
                 "watched_folder": previous_folder or "",
                 "watched_file": previous_file or "",
             },
-            user_id="default",
+            user_id=active_user_id,
         )
         return True
     except Exception as exc:
@@ -432,6 +434,7 @@ def status():
         "target_type": target_type,
         "watched_folder": watched_folder,
         "watched_file": watched_file,
+        "user_id": active_user_id,
         "observer_alive": observer.is_alive() if observer else False,
         "events_written": events_written,
         "last_event_at": datetime.fromtimestamp(last_event_at, tz=timezone.utc).isoformat() if last_event_at else None,
@@ -441,6 +444,12 @@ def status():
 
 @app.route("/pick-target", methods=["GET", "POST"])
 def pick_target():
+    global active_user_id
+    payload = request.get_json(silent=True) or {}
+    incoming_user_id = str(payload.get("user_id") or "").strip()
+    if incoming_user_id:
+        active_user_id = incoming_user_id
+
     target = pick_target_dialog()
     if target is None:
         return jsonify({"error": "No target selected or dialog cancelled", "reason": last_picker_error}), 400

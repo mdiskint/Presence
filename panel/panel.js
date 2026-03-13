@@ -1596,7 +1596,7 @@ async function toggleWatchFolder() {
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: '{}',
+      body: JSON.stringify({ user_id: runtimeConfig?.userId || null }),
       signal: controller.signal
     });
     const payload = await response.json().catch(() => ({}));
