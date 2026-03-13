@@ -1511,6 +1511,7 @@ const watchFolderBtn = document.getElementById('watch-folder-btn');
 const watchFolderStatusEl = document.getElementById('watch-folder-status');
 let activeWatchedFolder = '';
 let activeWatchTargetType = null;
+let activeWatchEnabled = false;
 
 function setRealtimeToggleUi(active) {
   if (!realtimeToggleBtn || !realtimeStatusDot || !realtimeStatusText) return;
@@ -1572,11 +1573,13 @@ async function refreshWatchFolderStatus() {
     }
     var payload = await response.json();
     var watching = Boolean(payload && payload.watching);
+    activeWatchEnabled = watching;
     var target = payload?.target || payload?.watched_file || payload?.watched_folder || payload?.watch_folder || payload?.watchFolder || payload?.folder || '';
     var targetType = payload?.target_type || (payload?.watched_file ? 'file' : (payload?.watched_folder ? 'folder' : null));
     setWatchFolderUi(watching ? target : '', watching ? targetType : null);
   } catch (err) {
     console.warn('[Presence] Failed to load watch folder status:', err?.message || err);
+    activeWatchEnabled = false;
     setWatchFolderUi('', null);
   }
 }
@@ -1584,10 +1587,13 @@ async function refreshWatchFolderStatus() {
 async function toggleWatchFolder() {
   if (!watchFolderBtn) return;
 
-  const endpoint = activeWatchedFolder ? 'http://localhost:5556/stop-watching' : 'http://localhost:5556/pick-target';
+  const labelSuggestsStop = String(watchFolderBtn.textContent || '').toLowerCase().includes('stop watching');
+  const shouldStop = activeWatchEnabled || labelSuggestsStop;
+  const endpoint = shouldStop ? 'http://localhost:5556/stop-watching' : 'http://localhost:5556/pick-target';
   const originalLabel = watchFolderBtn.textContent;
+  let requestSucceeded = false;
   watchFolderBtn.disabled = true;
-  watchFolderBtn.textContent = activeWatchedFolder ? 'Stopping...' : 'Choosing...';
+  watchFolderBtn.textContent = shouldStop ? 'Stopping...' : 'Choosing...';
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 30000);
@@ -1608,6 +1614,7 @@ async function toggleWatchFolder() {
       throw new Error(payload?.error || 'Folder picker failed');
     }
     await refreshWatchFolderStatus();
+    requestSucceeded = true;
   } catch (err) {
     const aborted = err?.name === 'AbortError';
     showMessage(aborted
@@ -1617,7 +1624,7 @@ async function toggleWatchFolder() {
   } finally {
     clearTimeout(timeoutId);
     watchFolderBtn.disabled = false;
-    if (!activeWatchedFolder) {
+    if (!requestSucceeded) {
       watchFolderBtn.textContent = originalLabel || 'Watch';
     }
   }
