@@ -1583,26 +1583,43 @@ async function refreshWatchFolderStatus() {
 
 async function toggleWatchFolder() {
   if (!watchFolderBtn) return;
+
+  const endpoint = activeWatchedFolder ? 'http://localhost:5556/stop-watching' : 'http://localhost:5556/pick-target';
+  const originalLabel = watchFolderBtn.textContent;
   watchFolderBtn.disabled = true;
+  watchFolderBtn.textContent = activeWatchedFolder ? 'Stopping...' : 'Choosing...';
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+
   try {
-    const endpoint = activeWatchedFolder ? 'http://localhost:5556/stop-watching' : 'http://localhost:5556/pick-target';
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: '{}'
+      body: '{}',
+      signal: controller.signal
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload?.error || ('HTTP ' + response.status));
+      const reason = payload?.reason ? ` (${payload.reason})` : '';
+      throw new Error((payload?.error || ('HTTP ' + response.status)) + reason);
     }
     if (payload?.ok === false) {
       throw new Error(payload?.error || 'Folder picker failed');
     }
     await refreshWatchFolderStatus();
   } catch (err) {
-    showMessage('Watch folder failed: ' + (err?.message || String(err)));
+    const aborted = err?.name === 'AbortError';
+    showMessage(aborted
+      ? 'Watch failed: request timed out. Check macOS picker permissions and try again.'
+      : 'Watch failed: ' + (err?.message || String(err))
+    );
   } finally {
+    clearTimeout(timeoutId);
     watchFolderBtn.disabled = false;
+    if (!activeWatchedFolder) {
+      watchFolderBtn.textContent = originalLabel || 'Watch';
+    }
   }
 }
 

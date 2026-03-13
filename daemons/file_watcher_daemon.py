@@ -62,6 +62,7 @@ started_at = time.time()
 _HEARTBEAT_LAST_SENT: dict[str, float] = {}
 HEARTBEAT_INTERVAL_SECONDS = 5 * 60
 FILE_CONTENT_CACHE: dict[str, str] = {}
+last_picker_error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -150,12 +151,13 @@ class PresenceFileHandler(FileSystemEventHandler):
         super().__init__()
         self._recent: dict[str, float] = {}
 
-    def _debounce(self, path: str) -> bool:
+    def _debounce(self, path: str, event_type: str) -> bool:
         now = time.time()
-        last = self._recent.get(path, 0.0)
+        key = f"{event_type}:{path}"
+        last = self._recent.get(key, 0.0)
         if now - last < self.DEBOUNCE_SECONDS:
             return True
-        self._recent[path] = now
+        self._recent[key] = now
         # Prune old entries
         cutoff = now - 30
         self._recent = {k: v for k, v in self._recent.items() if v > cutoff}
@@ -242,7 +244,7 @@ class PresenceFileHandler(FileSystemEventHandler):
         if basename.startswith(".") or basename.startswith("~"):
             return
 
-        if self._debounce(src):
+        if self._debounce(src, getattr(event, "event_type", "")):
             return
 
         if watched_file:
@@ -293,30 +295,44 @@ class PresenceFileHandler(FileSystemEventHandler):
 # FOLDER PICKER (macOS osascript)
 # ---------------------------------------------------------------------------
 def pick_target_dialog() -> str | None:
-    """Open native macOS picker for either file or folder via osascript."""
-    script = (
-        'tell application "System Events"\n'
-        '  activate\n'
-        '  set chosenTarget to choose file or folder with prompt "Select a file or folder to watch"\n'
-        '  return POSIX path of chosenTarget\n'
-        'end tell'
+    """Open native macOS picker for either file or folder via AppleScript."""
+    global last_picker_error
+    last_picker_error = None
+
+    mode_script = (
+        'set choice to button returned of (display dialog "Watch a file or a folder?" buttons {"Cancel", "Folder", "File"} default button "File")\n'
+        'if choice is "File" then\n'
+        '  set chosenTarget to choose file with prompt "Select a file to watch"\n'
+        'else if choice is "Folder" then\n'
+        '  set chosenTarget to choose folder with prompt "Select a folder to watch"\n'
+        'end if\n'
+        'return POSIX path of chosenTarget\n'
     )
+
     try:
         result = subprocess.run(
-            ["osascript", "-e", script],
+            ["osascript", "-e", mode_script],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=30,
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
+
+        if result.stderr.strip():
+            last_picker_error = result.stderr.strip()
+            logger.warning(f"[FW:Picker] osascript stderr: {result.stderr.strip()}")
+        else:
+            last_picker_error = "No target selected or dialog cancelled"
         return None
     except Exception as exc:
+        last_picker_error = str(exc)
         logger.error(f"[FW:Picker] osascript error: {exc}")
         return None
 
 
 def start_watching(target: str) -> bool:
+
     """Start watchdog observer on a folder or a single file."""
     global observer, watched_folder, watched_file
 
@@ -427,7 +443,7 @@ def status():
 def pick_target():
     target = pick_target_dialog()
     if target is None:
-        return jsonify({"error": "No target selected or dialog cancelled"}), 400
+        return jsonify({"error": "No target selected or dialog cancelled", "reason": last_picker_error}), 400
 
     ok = start_watching(target)
     if not ok:
