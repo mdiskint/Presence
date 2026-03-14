@@ -39,7 +39,7 @@ const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 
 const MODEL_OPUS = "claude-opus-4-6";
 
-const MODE_WINDOW_MINUTES = 5;
+const MODE_WINDOW_MINUTES = 3;
 const FALLBACK_ACTIVITY_HOURS = 2;
 const MIN_FIRE_GAP_MINUTES = 10;
 const MAX_ATTENTION_DIGEST_CHARS = 1000;
